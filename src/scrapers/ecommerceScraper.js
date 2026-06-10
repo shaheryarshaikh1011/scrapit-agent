@@ -201,113 +201,57 @@ class EcommerceScraper extends BaseScraper {
   }
 
   /**
-   * Handle JioMart location modal - set default to Mumbai if not specified
+   * Handle JioMart location modal - try to dismiss/close location popups
    */
   async handleJioMartLocation(location) {
-    const defaultPincode = location || '400001'; // Mumbai default
-    
     try {
-      // Wait a bit for modal to appear
+      // Wait a bit for modals to appear
       await this.page.waitForTimeout(2000);
       
-      // Check if location modal is visible
-      const modalSelectors = [
-        'text=Enable Location Services',
-        'text=Select Location Manually',
-        '[class*="location-modal"]',
-        '[class*="pincode-modal"]'
-      ];
+      // Try to dismiss any location-related popups by closing them
+      // This is simpler and more reliable than trying to fill in location
+      await this.dismissJioMartPopups();
       
-      let modalFound = false;
-      for (const selector of modalSelectors) {
-        try {
-          const element = this.page.locator(selector).first();
-          if (await element.isVisible({ timeout: 2000 })) {
-            modalFound = true;
-            break;
-          }
-        } catch {
-          continue;
-        }
-      }
+    } catch (error) {
+      logger.warn(`Could not handle JioMart location modal: ${error.message}`);
+    }
+  }
+
+  /**
+   * Dismiss JioMart popups by clicking X/close/back buttons
+   */
+  async dismissJioMartPopups() {
+    // Try multiple times as there can be multiple popups
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let dismissed = false;
       
-      if (!modalFound) {
-        logger.info('No location modal found, continuing...');
-        return;
-      }
-      
-      logger.info(`JioMart location modal detected, setting pincode: ${defaultPincode}`);
-      
-      // Try clicking "Select Location Manually" button
-      const manualLocationBtn = this.page.locator('text=Select Location Manually').first();
-      if (await manualLocationBtn.isVisible({ timeout: 2000 })) {
-        await manualLocationBtn.click();
-        await this.page.waitForTimeout(1000);
-      }
-      
-      // Look for pincode input field
-      const pincodeSelectors = [
-        'input[placeholder*="pincode"]',
-        'input[placeholder*="Pincode"]',
-        'input[placeholder*="PIN"]',
-        'input[type="text"][maxlength="6"]',
-        'input[name*="pincode"]',
-        '[class*="pincode"] input',
-        'input[aria-label*="pincode"]'
-      ];
-      
-      for (const selector of pincodeSelectors) {
-        try {
-          const input = this.page.locator(selector).first();
-          if (await input.isVisible({ timeout: 2000 })) {
-            await input.clear();
-            await input.fill(defaultPincode);
-            logger.info(`Entered pincode: ${defaultPincode}`);
-            
-            // Wait for suggestions or auto-complete
-            await this.page.waitForTimeout(1500);
-            
-            // Try to click confirm/submit button
-            const confirmSelectors = [
-              'button:has-text("Confirm")',
-              'button:has-text("Apply")',
-              'button:has-text("Submit")',
-              'button:has-text("Save")',
-              '[class*="confirm"] button',
-              '[class*="apply"] button'
-            ];
-            
-            for (const btnSelector of confirmSelectors) {
-              try {
-                const btn = this.page.locator(btnSelector).first();
-                if (await btn.isVisible({ timeout: 1000 })) {
-                  await btn.click();
-                  logger.success('Location confirmed');
-                  await this.page.waitForTimeout(2000);
-                  return;
-                }
-              } catch {
-                continue;
-              }
-            }
-            
-            // If no confirm button, try pressing Enter
-            await input.press('Enter');
-            await this.page.waitForTimeout(2000);
-            return;
-          }
-        } catch {
-          continue;
-        }
-      }
-      
-      // If we couldn't find pincode input, try closing the modal
+      // Common close button selectors
       const closeSelectors = [
+        // X buttons
         'button[aria-label="close"]',
-        'button[class*="close"]',
-        '[class*="modal"] button:has-text("×")',
-        '[class*="modal"] [class*="close"]',
-        'svg[class*="close"]'
+        'button[aria-label="Close"]',
+        '[class*="close-btn"]',
+        '[class*="close-icon"]',
+        '[class*="closeBtn"]',
+        '[class*="modal-close"]',
+        'button:has(svg[class*="close"])',
+        '[class*="cross"]',
+        // Back buttons (the < button in the screenshot)
+        'button:has-text("<")',
+        '[class*="back-btn"]',
+        '[class*="back-arrow"]',
+        '[aria-label*="back"]',
+        '[aria-label*="Back"]',
+        // Generic X or × character buttons
+        'button:has-text("×")',
+        'button:has-text("✕")',
+        'button:has-text("X")',
+        // SVG close icons
+        'svg[class*="close"]',
+        'svg[class*="cross"]',
+        // Modal overlay click to dismiss
+        '[class*="modal-backdrop"]',
+        '[class*="overlay"]'
       ];
       
       for (const selector of closeSelectors) {
@@ -315,18 +259,41 @@ class EcommerceScraper extends BaseScraper {
           const closeBtn = this.page.locator(selector).first();
           if (await closeBtn.isVisible({ timeout: 1000 })) {
             await closeBtn.click();
-            logger.info('Closed location modal');
+            logger.info(`Dismissed popup using: ${selector}`);
+            dismissed = true;
             await this.page.waitForTimeout(1000);
-            return;
+            break;
           }
         } catch {
           continue;
         }
       }
       
-    } catch (error) {
-      logger.warn(`Could not handle JioMart location modal: ${error.message}`);
+      // Also try pressing Escape key to close modals
+      if (!dismissed) {
+        try {
+          await this.page.keyboard.press('Escape');
+          await this.page.waitForTimeout(500);
+          
+          // Check if any modal is still visible
+          const modalVisible = await this.page.locator('[class*="modal"], [class*="popup"], [class*="dialog"]').first().isVisible({ timeout: 500 }).catch(() => false);
+          if (!modalVisible) {
+            logger.info('Dismissed popup using Escape key');
+            dismissed = true;
+          }
+        } catch {
+          // Ignore
+        }
+      }
+      
+      // If nothing was dismissed, we're probably done
+      if (!dismissed) {
+        break;
+      }
     }
+    
+    // Final wait for page to settle
+    await this.page.waitForTimeout(1000);
   }
 
   /**
