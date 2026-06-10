@@ -486,10 +486,10 @@ class EcommerceScraper extends BaseScraper {
     for (const selector of confirmSelectors) {
       try {
         const btn = this.page.locator(selector).first();
-        if (await btn.isVisible({ timeout: 2000 })) {
+        if (await btn.isVisible({ timeout: 1500 })) {
           await btn.click();
           logger.success('Clicked "Confirm Location"');
-          await this.page.waitForTimeout(3000);
+          await this.page.waitForTimeout(1500);
           return true;
         }
       } catch {
@@ -976,9 +976,18 @@ class EcommerceScraper extends BaseScraper {
               data.reviewCount = productDetails.rating.count;
             }
 
-            // Get availability
+            // Get availability - check sellable flag
             data.inStock = productDetails.sellable !== false;
             data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
+            
+            // If product is unavailable, clear the price (it's stale data)
+            if (!data.inStock) {
+              data.price = null;
+              data.priceText = null;
+              data.originalPrice = null;
+              data.originalPriceText = null;
+              data.discount = null;
+            }
 
             // Get SKU/article info
             data.sku = productDetails.uid || productDetails.sku;
@@ -1170,16 +1179,33 @@ class EcommerceScraper extends BaseScraper {
         }
       }
 
-      // DOM fallback for availability
+      // DOM fallback for availability - check for "Currently unavailable" text
       if (data.availability === null) {
-        let hasAddToCartButton = false;
-        document.querySelectorAll('button').forEach(btn => {
-          if (btn.textContent.toLowerCase().includes('add to cart')) {
-            hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
-          }
-        });
-        data.inStock = hasAddToCartButton;
-        data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
+        // First check if page shows "Currently unavailable"
+        const pageText = document.body.textContent.toLowerCase();
+        if (pageText.includes('currently unavailable')) {
+          data.inStock = false;
+          data.availability = 'Currently Unavailable';
+        } else {
+          // Check for Add to Cart button
+          let hasAddToCartButton = false;
+          document.querySelectorAll('button').forEach(btn => {
+            if (btn.textContent.toLowerCase().includes('add to cart')) {
+              hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
+            }
+          });
+          data.inStock = hasAddToCartButton;
+          data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
+        }
+      }
+      
+      // Final check: If unavailable, clear prices (they're stale/cached)
+      if (!data.inStock || data.availability === 'Currently Unavailable') {
+        data.price = null;
+        data.priceText = null;
+        data.originalPrice = null;
+        data.originalPriceText = null;
+        data.discount = null;
       }
 
       // DOM fallback for brand
