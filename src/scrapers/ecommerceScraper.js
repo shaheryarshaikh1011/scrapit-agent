@@ -231,13 +231,13 @@ class EcommerceScraper extends BaseScraper {
         await this.goto('https://www.jiomart.com/', {
           waitUntil: 'domcontentloaded'
         });
-        await this.page.waitForTimeout(2000);
+        await this.page.waitForTimeout(1500);
 
         // Step 2: Set location using pincode
         const locationSet = await this.handleJioMartPincodeLocation(pincode);
         
         // Wait for location to be saved
-        await this.page.waitForTimeout(2000);
+        await this.page.waitForTimeout(1500);
 
         // Step 3: Now navigate to product page - prices will load with correct location
         logger.info('Navigating to product page...');
@@ -247,7 +247,7 @@ class EcommerceScraper extends BaseScraper {
         });
 
         // Wait for React to render product data
-        await this.page.waitForTimeout(3000);
+        await this.page.waitForTimeout(2000);
 
         // Get current location display
         const locationInfo = await this.getCurrentLocation();
