@@ -230,6 +230,28 @@ function printResults(result) {
     }
   }
 
+  if (result.type === 'homepage' || result.pageType === 'homepage') {
+    console.log(chalk.bold('Homepage Data:'));
+    console.log(`  Categories: ${chalk.cyan(result.totalCategories || result.categories?.length || 0)}`);
+    console.log(`  Featured Products: ${chalk.cyan(result.totalFeaturedProducts || result.featuredProducts?.length || 0)}`);
+    console.log(`  Banners: ${chalk.cyan(result.banners?.length || 0)}`);
+    
+    if (result.categories?.length > 0) {
+      console.log(chalk.bold('\nTop Categories:'));
+      result.categories.slice(0, 10).forEach((c, i) => {
+        console.log(`  ${i + 1}. ${chalk.white(c.name)}`);
+      });
+    }
+    
+    if (result.featuredProducts?.length > 0) {
+      console.log(chalk.bold('\nFeatured Products:'));
+      result.featuredProducts.slice(0, 5).forEach((p, i) => {
+        console.log(`  ${i + 1}. ${chalk.white(p.title?.substring(0, 50) || 'N/A')}`);
+        if (p.priceText) console.log(`     ${chalk.green(p.priceText)}`);
+      });
+    }
+  }
+
   if (result.type === 'article') {
     console.log(chalk.bold('Article:'));
     console.log(`  Title: ${chalk.white(result.title)}`);
