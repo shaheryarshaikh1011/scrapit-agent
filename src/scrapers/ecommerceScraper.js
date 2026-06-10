@@ -732,13 +732,16 @@ class EcommerceScraper extends BaseScraper {
           const btnText = btn.textContent.trim();
           const isSelected = btn.classList.contains('selected') || 
                             btn.getAttribute('aria-selected') === 'true' ||
-                            btn.closest('[class*="selected"]') !== null;
+                            btn.closest('[class*="selected"]') !== null ||
+                            btn.className.toLowerCase().includes('selected') ||
+                            btn.className.toLowerCase().includes('active');
           
           // Check if this specific variant is out of stock
           const parent = btn.closest('div');
-          const hasOutOfStock = parent ? 
-            parent.querySelector('[class*="out"], [class*="stock"]')?.textContent?.toLowerCase().includes('out') :
-            false;
+          const btnTextLower = btnText.toLowerCase();
+          const hasOutOfStock = btnTextLower.includes('out of stock') || 
+                                btnTextLower.includes('out') ||
+                                (parent && parent.textContent.toLowerCase().includes('out of stock'));
           
           // Extract size and price from button
           const sizeMatch = btnText.match(/(\d+\s*(?:g|kg|ml|l|pack|pc|pcs))/i);
@@ -757,32 +760,36 @@ class EcommerceScraper extends BaseScraper {
       }
       
       // Get availability - check for "Add to Cart" button as primary indicator
-      // If Add to Cart is visible and clickable, product is in stock
-      const addToCartBtn = document.querySelector('button:has-text("Add to Cart"), button[class*="add-to-cart"], [class*="addToCart"] button');
-      const addToCartVisible = addToCartBtn && !addToCartBtn.disabled && window.getComputedStyle(addToCartBtn).display !== 'none';
+      let hasAddToCartButton = false;
+      document.querySelectorAll('button').forEach(btn => {
+        if (btn.textContent.toLowerCase().includes('add to cart')) {
+          hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
+        }
+      });
       
       // Check if main product area (not variant options) shows "out of stock"
       const mainProductArea = document.querySelector('[class*="productDescription"], [class*="product-info"]');
-      const mainAreaText = mainProductArea ? mainProductArea.textContent.toLowerCase() : '';
-      
-      // Look for "Out of stock" that's NOT inside variant/size selectors
       const variantArea = document.querySelector('[class*="size"], [class*="variant"]');
-      const nonVariantText = mainAreaText.replace(variantArea?.textContent?.toLowerCase() || '', '');
       
-      // Product is in stock if Add to Cart is visible OR no out of stock in main area
-      const hasAddToCart = document.body.textContent.includes('Add to Cart');
-      const mainProductOutOfStock = nonVariantText.includes('currently unavailable') || 
-                                    (nonVariantText.includes('out of stock') && !nonVariantText.includes('add to cart'));
+      // Get text from main area excluding variant selector area
+      let mainAreaText = mainProductArea ? mainProductArea.textContent.toLowerCase() : document.body.textContent.toLowerCase();
+      if (variantArea) {
+        mainAreaText = mainAreaText.replace(variantArea.textContent.toLowerCase(), '');
+      }
       
-      data.inStock = hasAddToCart && !mainProductOutOfStock;
+      // Product is in stock if Add to Cart button is present
+      data.inStock = hasAddToCartButton;
       data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
       
       // Update selected variant info
       const selectedVariant = data.variants.find(v => v.selected);
       if (selectedVariant) {
         data.selectedVariant = selectedVariant;
-        data.inStock = selectedVariant.inStock;
-        data.availability = selectedVariant.inStock ? 'In Stock' : 'Currently Unavailable';
+        // Selected variant stock status overrides
+        if (!selectedVariant.inStock) {
+          data.inStock = false;
+          data.availability = 'Currently Unavailable';
+        }
       }
       
       // Get brand
