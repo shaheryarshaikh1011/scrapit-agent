@@ -345,6 +345,30 @@ class EcommerceScraper extends BaseScraper {
       // Wait briefly for page to stabilize
       await this.page.waitForTimeout(1000);
 
+      // First, try to click on the location selector in the header to open location modal
+      // This works when the "Enable Location Services" modal doesn't appear
+      const locationHeaderSelectors = [
+        '[class*="location"]',
+        '[class*="deliver"]',
+        '[class*="address"]',
+        'text=Location',
+        'text=Deliver to'
+      ];
+
+      for (const selector of locationHeaderSelectors) {
+        try {
+          const locationBtn = this.page.locator(selector).first();
+          if (await locationBtn.isVisible({ timeout: 500 })) {
+            await locationBtn.click();
+            logger.info('Clicked location selector in header');
+            await this.page.waitForTimeout(1500);
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+
       // Check if location modal is already open
       const enableLocationModal = this.page.locator('text=Enable Location Services').first();
 
@@ -358,12 +382,26 @@ class EcommerceScraper extends BaseScraper {
         }
       }
 
+      // Check for "Choose your delivery address" or similar modal
+      const chooseAddressModal = this.page.locator('text=Choose your delivery address').first();
+      if (await chooseAddressModal.isVisible({ timeout: 500 })) {
+        // Look for "Add new address" or similar to get to pincode input
+        const addNewBtn = this.page.locator('text=Add new address').first();
+        if (await addNewBtn.isVisible({ timeout: 500 })) {
+          await addNewBtn.click();
+          logger.info('Clicked "Add new address"');
+          await this.page.waitForTimeout(1000);
+        }
+      }
+
       // Look for the search input
       const searchInputSelectors = [
         'input[placeholder*="Search for area"]',
         'input[placeholder*="area, street"]',
         'input[placeholder*="landmark"]',
-        'input[placeholder*="Search"]'
+        'input[placeholder*="Search"]',
+        'input[placeholder*="pincode"]',
+        'input[placeholder*="Enter"]'
       ];
 
       let searchInput = null;
