@@ -241,55 +241,55 @@ program
   });
 
 /**
- * Pretty print price comparison results
+ * Pretty print price comparison results (consolidated SKU format)
  */
 function printComparisonResults(results) {
   console.log('\n' + chalk.bold.cyan('═'.repeat(60)));
-  console.log(chalk.bold.cyan('  PRICE COMPARISON RESULTS'));
+  console.log(chalk.bold.cyan('  SKU DATA - MULTI-PINCODE'));
   console.log(chalk.bold.cyan('═'.repeat(60)) + '\n');
 
-  if (results.product) {
-    console.log(chalk.bold('Product:'));
-    console.log(`  ${chalk.white(results.product.title || 'N/A')}`);
-    if (results.product.brand) console.log(`  Brand: ${results.product.brand}`);
-    console.log('');
-  }
+  // Product info
+  console.log(chalk.bold('Product:'));
+  console.log(`  Title: ${chalk.white(results.title || 'N/A')}`);
+  if (results.brand) console.log(`  Brand: ${results.brand}`);
+  if (results.sku) console.log(`  SKU: ${results.sku}`);
+  if (results.weight) console.log(`  Weight: ${results.weight}`);
+  if (results.rating) console.log(`  Rating: ${chalk.yellow(results.rating)} (${results.reviewCount || 0} reviews)`);
+  console.log('');
 
-  console.log(chalk.bold('Price by Location:'));
+  // Price by pincode
+  console.log(chalk.bold('Price by Pincode:'));
   console.log(chalk.gray('─'.repeat(60)));
-  
-  results.comparison.forEach((item, index) => {
+
+  results.pincodeData.forEach((item) => {
     const statusIcon = item.error ? '❌' : (item.inStock ? '✅' : '⚠️');
     const priceColor = item.inStock ? chalk.green : chalk.gray;
-    
-    console.log(`\n  ${statusIcon} Pincode: ${chalk.bold(item.pincode)}`);
-    
+
+    console.log(`\n  ${statusIcon} ${chalk.bold(item.pincode)} ${item.location ? `(${chalk.gray(item.location.substring(0, 40))})` : ''}`);
+
     if (item.error) {
       console.log(`     ${chalk.red(`Error: ${item.error}`)}`);
     } else {
-      if (item.location?.display) {
-        console.log(`     📍 ${chalk.gray(item.location.display)}`);
-      }
-      console.log(`     💰 Price: ${priceColor(item.priceText || 'N/A')}`);
-      if (item.originalPriceText) {
-        console.log(`     📊 MRP: ${chalk.gray(item.originalPriceText)} (${chalk.yellow(item.discount || 'No discount')})`);
-      }
-      console.log(`     📦 ${item.inStock ? chalk.green('In Stock') : chalk.red(item.availability || 'Out of Stock')}`);
+      console.log(`     Price: ${priceColor(item.priceText || 'N/A')}${item.originalPriceText ? ` (MRP: ${chalk.gray(item.originalPriceText)})` : ''}`);
+      if (item.discount) console.log(`     Discount: ${chalk.yellow(item.discount)}`);
+      console.log(`     Status: ${item.inStock ? chalk.green('In Stock') : chalk.red(item.availability || 'Out of Stock')}`);
     }
   });
 
-  // Price statistics
-  if (results.priceStats) {
+  // Summary
+  if (results.priceRange) {
     console.log('\n' + chalk.gray('─'.repeat(60)));
-    console.log(chalk.bold('\n📈 Price Statistics:'));
-    console.log(`  Lowest:  ${chalk.green(`₹${results.priceStats.min}`)} at pincode ${chalk.bold(results.priceStats.cheapestAt)}`);
-    console.log(`  Highest: ${chalk.red(`₹${results.priceStats.max}`)} at pincode ${chalk.bold(results.priceStats.mostExpensiveAt)}`);
-    console.log(`  Average: ${chalk.yellow(`₹${results.priceStats.avg}`)}`);
-    
-    if (results.priceStats.max > results.priceStats.min) {
-      const savings = results.priceStats.max - results.priceStats.min;
-      const savingsPercent = Math.round((savings / results.priceStats.max) * 100);
-      console.log(`\n  💡 ${chalk.green(`You can save ₹${savings} (${savingsPercent}%)`)} by ordering from ${chalk.bold(results.priceStats.cheapestAt)}!`);
+    console.log(chalk.bold('\n📊 Summary:'));
+    console.log(`  Price Range: ${chalk.green(`₹${results.priceRange.min}`)} - ${chalk.red(`₹${results.priceRange.max}`)}`);
+    console.log(`  Average: ${chalk.yellow(`₹${results.priceRange.avg}`)}`);
+    if (results.cheapestPincode) {
+      console.log(`  Cheapest at: ${chalk.bold(results.cheapestPincode)}`);
+    }
+    if (results.availableAt?.length > 0) {
+      console.log(`  Available at: ${chalk.green(results.availableAt.join(', '))}`);
+    }
+    if (results.unavailableAt?.length > 0) {
+      console.log(`  Unavailable at: ${chalk.red(results.unavailableAt.join(', '))}`);
     }
   }
 

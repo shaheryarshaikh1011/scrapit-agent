@@ -203,11 +203,11 @@ class EcommerceScraper extends BaseScraper {
   /**
    * Compare product prices across multiple pincodes
    * Returns consolidated SKU data with prices for each pincode
+   * 
+   * IMPORTANT: JioMart renders prices server-side in APP_DATA.
+   * We must set location FIRST (on homepage), then navigate to product page.
    */
   async comparePrices(url, pincodes = [], options = {}) {
-    // First scrape to get base product info
-    let baseProduct = null;
-
     const skuData = {
       url,
       sku: null,
@@ -226,22 +226,33 @@ class EcommerceScraper extends BaseScraper {
         await this.init();
         this.siteConfig = this.getSiteConfig(url);
 
+        // Step 1: Go to JioMart homepage first to set location
+        logger.info('Setting location on homepage first...');
+        await this.goto('https://www.jiomart.com/', {
+          waitUntil: 'domcontentloaded'
+        });
+        await this.page.waitForTimeout(2000);
+
+        // Step 2: Set location using pincode
+        const locationSet = await this.handleJioMartPincodeLocation(pincode);
+        
+        // Wait for location to be saved
+        await this.page.waitForTimeout(2000);
+
+        // Step 3: Now navigate to product page - prices will load with correct location
+        logger.info('Navigating to product page...');
         await this.goto(url, {
           waitUntil: 'domcontentloaded',
           waitForSelector: this.siteConfig.waitSelector
         });
 
-        // Set location using pincode
-        const locationSet = await this.handleJioMartPincodeLocation(pincode);
-
-        // Wait for content to fully update after location change
+        // Wait for React to render product data
         await this.page.waitForTimeout(3000);
-        await this.handleDynamicContent();
 
         // Get current location display
         const locationInfo = await this.getCurrentLocation();
 
-        // Scrape product data
+        // Scrape product data - should now have correct prices
         const productData = await this.scrapeJioMartProductPage();
 
         // Set base product info from first successful scrape
@@ -268,7 +279,7 @@ class EcommerceScraper extends BaseScraper {
           inStock: productData.inStock,
           availability: productData.availability,
           variants: productData.variants || [],
-          deliveryInfo: null // Can be extended to capture delivery time
+          deliveryInfo: null
         });
 
         logger.success(`Pincode ${pincode}: ${productData.priceText || 'N/A'} - ${productData.availability}`);
@@ -286,13 +297,13 @@ class EcommerceScraper extends BaseScraper {
         await this.close();
       }
 
-      // Small delay between requests to avoid rate limiting
+      // Small delay between requests
       if (i < pincodes.length - 1) {
-        await sleepWithJitter(2000, 1000);
+        await sleepWithJitter(1500, 500);
       }
     }
 
-    // Calculate price statistics across pincodes
+    // Calculate price statistics
     const validPrices = skuData.pincodeData.filter(p => p.price && !p.error);
     if (validPrices.length > 0) {
       const prices = validPrices.map(p => p.price);
@@ -311,42 +322,43 @@ class EcommerceScraper extends BaseScraper {
 
   /**
    * Handle JioMart location setting via pincode search
+   * Optimized for speed - reduced wait times
    */
   async handleJioMartPincodeLocation(pincode) {
     try {
       logger.info(`Setting location to pincode: ${pincode}`);
 
-      // Wait for page to load
-      await this.page.waitForTimeout(2000);
+      // Store pincode for use in suggestion click
+      this.currentPincode = pincode;
 
-      // Check if location modal is already open, if not click on location
+      // Wait briefly for page to stabilize
+      await this.page.waitForTimeout(1500);
+
+      // Check if location modal is already open
       const enableLocationModal = this.page.locator('text=Enable Location Services').first();
 
-      if (await enableLocationModal.isVisible({ timeout: 2000 })) {
+      if (await enableLocationModal.isVisible({ timeout: 1500 })) {
         // Click "Select Location Manually" to get to pincode search
         const manualBtn = this.page.locator('text=Select Location Manually').first();
-        if (await manualBtn.isVisible({ timeout: 1500 })) {
+        if (await manualBtn.isVisible({ timeout: 1000 })) {
           await manualBtn.click();
           logger.info('Clicked "Select Location Manually"');
-          await this.page.waitForTimeout(2000);
+          await this.page.waitForTimeout(1500);
         }
       }
 
-      // Now we should see "Choose your delivery address" modal with search
       // Look for the search input
       const searchInputSelectors = [
         'input[placeholder*="Search for area"]',
         'input[placeholder*="area, street"]',
         'input[placeholder*="landmark"]',
-        'input[placeholder*="Search"]',
-        '[class*="search"] input',
-        '[class*="address"] input'
+        'input[placeholder*="Search"]'
       ];
 
       let searchInput = null;
       for (const selector of searchInputSelectors) {
         const input = this.page.locator(selector).first();
-        if (await input.isVisible({ timeout: 2000 })) {
+        if (await input.isVisible({ timeout: 1500 })) {
           searchInput = input;
           logger.info(`Found search input: ${selector}`);
           break;
@@ -356,53 +368,49 @@ class EcommerceScraper extends BaseScraper {
       if (searchInput) {
         // Clear and type pincode
         await searchInput.click();
-        await this.page.waitForTimeout(500);
-        await searchInput.fill('');
         await this.page.waitForTimeout(300);
+        await searchInput.fill('');
+        await this.page.waitForTimeout(200);
 
-        // Type pincode slowly to trigger autocomplete
-        await searchInput.type(pincode, { delay: 150 });
+        // Type pincode - faster typing
+        await searchInput.type(pincode, { delay: 100 });
         logger.info(`Typed pincode: ${pincode}`);
 
-        // Wait for dropdown suggestions to appear
-        await this.page.waitForTimeout(3000);
+        // Wait for Google Places autocomplete dropdown
+        await this.page.waitForTimeout(2000);
 
         // Click on first suggestion in dropdown
         const suggestionClicked = await this.clickLocationSuggestion();
 
         if (suggestionClicked) {
-          // Wait for map to load after selecting suggestion
-          await this.page.waitForTimeout(3000);
+          // Wait for map to load
+          await this.page.waitForTimeout(2000);
 
           // Click "Confirm Location" button
           const confirmed = await this.clickConfirmLocation();
 
           if (confirmed) {
-            // Wait for page to update with new location
-            await this.page.waitForTimeout(3000);
             logger.success(`Location set to pincode: ${pincode}`);
             return true;
           }
         } else {
-          // No suggestion found, try pressing Enter and see if map appears
+          // No suggestion found, try pressing Enter
           logger.info('No suggestion dropdown, trying Enter key');
           await searchInput.press('Enter');
-          await this.page.waitForTimeout(3000);
-
-          // Try to confirm if map appeared
+          await this.page.waitForTimeout(2000);
           await this.clickConfirmLocation();
         }
       } else {
         logger.warn('Could not find search input for pincode');
-        // Fallback to enable location via geolocation
+        // Try to dismiss any modal and use geolocation fallback
+        await this.dismissJioMartPopups();
         await this.handleJioMartEnableLocationModal();
       }
 
       return false;
     } catch (error) {
       logger.warn(`Pincode location setting failed: ${error.message}`);
-      // Fallback
-      await this.handleJioMartEnableLocationModal();
+      await this.dismissJioMartPopups();
       return false;
     }
   }
@@ -1066,49 +1074,66 @@ class EcommerceScraper extends BaseScraper {
 
       // DOM fallback for price - only if needed and use targeted extraction
       if (!data.price || data.price === 0) {
-        // Look for price specifically in product description area
-        const priceContainer = document.querySelector('[class*="productDescription"], [class*="pdp"]');
-        const priceArea = priceContainer || document.body;
-        const priceText = priceArea.textContent;
+        // Look for specific price elements first (more reliable)
+        const priceSelectors = [
+          // JioMart specific
+          '[class*="selling"] [class*="price"]',
+          '[class*="offer-price"]',
+          '[class*="finalPrice"]',
+          '[class*="discounted"]',
+          // Price near "Add to Cart" button
+          '[class*="addToCart"]',
+          '[class*="product-price"]'
+        ];
         
-        // Find prices with ₹ symbol followed by proper number (not % or small numbers from discounts)
-        // Pattern: ₹ followed by number >= 10 (to avoid "₹8% OFF" type matches)
-        const priceMatches = priceText.match(/₹\s*(\d{2,6})/g);
-        if (priceMatches && priceMatches.length > 0) {
-          const prices = priceMatches
-            .map(p => parseInt(p.replace(/[₹,\s]/g, '')))
-            .filter(p => p >= 10 && p < 100000); // Filter out too small or large values
-          
-          if (prices.length > 0) {
-            // Sort to find selling price (usually smallest) and MRP (usually larger)
-            const sortedPrices = [...new Set(prices)].sort((a, b) => a - b);
-            data.price = sortedPrices[0];
-            data.priceText = `₹${data.price}`;
-            
-            if (sortedPrices.length > 1 && sortedPrices[1] > data.price) {
-              data.originalPrice = sortedPrices[1];
-              data.originalPriceText = `₹${data.originalPrice}`;
+        for (const selector of priceSelectors) {
+          const el = document.querySelector(selector);
+          if (el) {
+            const text = el.textContent;
+            const match = text.match(/₹\s*([\d,]+)/);
+            if (match) {
+              const price = parseInt(match[1].replace(/,/g, ''));
+              if (price >= 10) {  // Reasonable product price
+                data.price = price;
+                data.priceText = `₹${price}`;
+                break;
+              }
             }
           }
         }
         
-        // If still no price, try single digit prices but more carefully
+        // If still no price, look in price container with better context
         if (!data.price || data.price === 0) {
-          // Look specifically for "₹XX" pattern without % after
-          const carefulPriceMatches = priceText.match(/₹(\d+)(?![%])/g);
-          if (carefulPriceMatches) {
-            const prices = carefulPriceMatches
-              .map(p => parseInt(p.replace(/[₹,]/g, '')))
-              .filter(p => p > 0 && p < 100000);
-            
-            if (prices.length > 0) {
-              const sortedPrices = [...new Set(prices)].sort((a, b) => a - b);
-              data.price = sortedPrices[0];
-              data.priceText = `₹${data.price}`;
-              
-              if (sortedPrices.length > 1) {
-                data.originalPrice = sortedPrices[1];
-                data.originalPriceText = `₹${data.originalPrice}`;
+          // Look for "₹XX" followed by MRP indicator
+          const pricePattern = /₹\s*(\d{2,5})\s*(?:₹|MRP|was|\/)/i;
+          const bodyText = document.body.textContent;
+          const match = bodyText.match(pricePattern);
+          if (match) {
+            data.price = parseInt(match[1]);
+            data.priceText = `₹${data.price}`;
+          }
+        }
+
+        // Final fallback - look near "Add to Cart"
+        if (!data.price || data.price === 0) {
+          const addToCart = document.querySelector('button:has-text("Add to Cart"), [class*="addToCart"]');
+          if (addToCart) {
+            const parent = addToCart.closest('[class*="product"], [class*="pdp"], section');
+            if (parent) {
+              const priceMatches = parent.textContent.match(/₹\s*(\d{2,5})/g);
+              if (priceMatches && priceMatches.length > 0) {
+                const prices = priceMatches
+                  .map(p => parseInt(p.replace(/[₹,\s]/g, '')))
+                  .filter(p => p >= 20 && p < 50000);
+                if (prices.length > 0) {
+                  const sortedPrices = [...new Set(prices)].sort((a, b) => a - b);
+                  data.price = sortedPrices[0];
+                  data.priceText = `₹${data.price}`;
+                  if (sortedPrices.length > 1) {
+                    data.originalPrice = sortedPrices[1];
+                    data.originalPriceText = `₹${data.originalPrice}`;
+                  }
+                }
               }
             }
           }
