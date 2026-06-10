@@ -20,6 +20,7 @@ class ScrapIt {
       mode: options.mode || 'auto', // auto, generic, ecommerce, realtime
       maxPages: options.maxPages || 1,
       maxProducts: options.maxProducts || 100,
+      location: options.location || '400001', // Default Mumbai pincode for sites like JioMart
       realtime: options.realtime || false,
       duration: options.duration || 30000,
       selectors: options.selectors || []
@@ -52,7 +53,8 @@ class ScrapIt {
         scraper = new EcommerceScraper(this.options);
         result = await scraper.scrape(url, {
           maxPages: this.options.maxPages,
-          maxProducts: this.options.maxProducts
+          maxProducts: this.options.maxProducts,
+          location: this.options.location
         });
       } else {
         logger.info('Using: Generic Scraper');
