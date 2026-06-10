@@ -302,30 +302,30 @@ class EcommerceScraper extends BaseScraper {
   async handleJioMartPincodeLocation(pincode) {
     try {
       logger.info(`Setting location to pincode: ${pincode}`);
-      
+
       // Wait for page to load
       await this.page.waitForTimeout(2000);
 
       // Check if location modal is already open, if not click on location
-      const locationModal = this.page.locator('text=Choose your delivery address').first();
       const enableLocationModal = this.page.locator('text=Enable Location Services').first();
-      
+
       if (await enableLocationModal.isVisible({ timeout: 2000 })) {
         // Click "Select Location Manually" to get to pincode search
         const manualBtn = this.page.locator('text=Select Location Manually').first();
         if (await manualBtn.isVisible({ timeout: 1500 })) {
           await manualBtn.click();
           logger.info('Clicked "Select Location Manually"');
-          await this.page.waitForTimeout(1500);
+          await this.page.waitForTimeout(2000);
         }
       }
-      
-      // Look for the search input in the address modal
+
+      // Now we should see "Choose your delivery address" modal with search
+      // Look for the search input
       const searchInputSelectors = [
-        'input[placeholder*="Search"]',
-        'input[placeholder*="area"]',
+        'input[placeholder*="Search for area"]',
+        'input[placeholder*="area, street"]',
         'input[placeholder*="landmark"]',
-        'input[placeholder*="pincode"]',
+        'input[placeholder*="Search"]',
         '[class*="search"] input',
         '[class*="address"] input'
       ];
@@ -333,83 +333,118 @@ class EcommerceScraper extends BaseScraper {
       let searchInput = null;
       for (const selector of searchInputSelectors) {
         const input = this.page.locator(selector).first();
-        if (await input.isVisible({ timeout: 1500 })) {
+        if (await input.isVisible({ timeout: 2000 })) {
           searchInput = input;
           logger.info(`Found search input: ${selector}`);
           break;
         }
       }
 
-      if (!searchInput) {
-        // Try clicking on location button in header to open modal
-        const locationBtn = this.page.locator('[class*="location"], [class*="deliver"], [class*="pincode"]').first();
-        if (await locationBtn.isVisible({ timeout: 1500 })) {
-          await locationBtn.click();
-          await this.page.waitForTimeout(1500);
-          
-          // Try again to find search input
-          for (const selector of searchInputSelectors) {
-            const input = this.page.locator(selector).first();
-            if (await input.isVisible({ timeout: 1000 })) {
-              searchInput = input;
-              break;
-            }
-          }
-        }
-      }
-
       if (searchInput) {
         // Clear and type pincode
         await searchInput.click();
+        await this.page.waitForTimeout(500);
         await searchInput.fill('');
         await this.page.waitForTimeout(300);
-        await searchInput.type(pincode, { delay: 100 });
+
+        // Type pincode slowly to trigger autocomplete
+        await searchInput.type(pincode, { delay: 150 });
         logger.info(`Typed pincode: ${pincode}`);
-        
-        // Wait for dropdown suggestions
-        await this.page.waitForTimeout(2000);
+
+        // Wait for dropdown suggestions to appear
+        await this.page.waitForTimeout(3000);
 
         // Click on first suggestion in dropdown
-        const suggestionSelectors = [
-          '[class*="suggestion"]',
-          '[class*="dropdown"] [class*="item"]',
-          '[class*="autocomplete"] li',
-          '[class*="result"]',
-          '[class*="option"]'
-        ];
+        const suggestionClicked = await this.clickLocationSuggestion();
 
-        let clicked = false;
-        for (const selector of suggestionSelectors) {
-          const suggestion = this.page.locator(selector).first();
-          if (await suggestion.isVisible({ timeout: 1500 })) {
-            await suggestion.click();
-            logger.info('Clicked on location suggestion');
-            clicked = true;
-            await this.page.waitForTimeout(2000);
-            break;
+        if (suggestionClicked) {
+          // Wait for map to load after selecting suggestion
+          await this.page.waitForTimeout(3000);
+
+          // Click "Confirm Location" button
+          const confirmed = await this.clickConfirmLocation();
+
+          if (confirmed) {
+            // Wait for page to update with new location
+            await this.page.waitForTimeout(3000);
+            logger.success(`Location set to pincode: ${pincode}`);
+            return true;
           }
-        }
-
-        // If no suggestion dropdown, try pressing Enter
-        if (!clicked) {
+        } else {
+          // No suggestion found, try pressing Enter and see if map appears
+          logger.info('No suggestion dropdown, trying Enter key');
           await searchInput.press('Enter');
-          await this.page.waitForTimeout(2000);
-        }
+          await this.page.waitForTimeout(3000);
 
-        // Look for "Confirm Location" button (after map appears)
-        await this.clickConfirmLocation();
-        
+          // Try to confirm if map appeared
+          await this.clickConfirmLocation();
+        }
       } else {
         logger.warn('Could not find search input for pincode');
-        // Fallback to enable location
+        // Fallback to enable location via geolocation
         await this.handleJioMartEnableLocationModal();
       }
 
+      return false;
     } catch (error) {
       logger.warn(`Pincode location setting failed: ${error.message}`);
       // Fallback
       await this.handleJioMartEnableLocationModal();
+      return false;
     }
+  }
+
+  /**
+   * Click on location suggestion from dropdown
+   */
+  async clickLocationSuggestion() {
+    const suggestionSelectors = [
+      // JioMart specific dropdown items
+      '[class*="pac-item"]', // Google Places autocomplete
+      '[class*="suggestion"]',
+      '[class*="dropdown-item"]',
+      '[class*="autocomplete"] li',
+      '[class*="search-result"]',
+      '[class*="result-item"]',
+      '[class*="location-item"]',
+      'li[class*="option"]',
+      // Generic clickable list items that might contain address
+      '[class*="list"] div[class*="item"]'
+    ];
+
+    for (const selector of suggestionSelectors) {
+      try {
+        // Wait a bit for suggestions to render
+        await this.page.waitForTimeout(500);
+        const suggestions = this.page.locator(selector);
+        const count = await suggestions.count();
+
+        if (count > 0) {
+          // Click the first visible suggestion
+          const firstSuggestion = suggestions.first();
+          if (await firstSuggestion.isVisible({ timeout: 1000 })) {
+            await firstSuggestion.click();
+            logger.info(`Clicked location suggestion using: ${selector}`);
+            return true;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // Try clicking any element that contains the pincode text
+    try {
+      const pincodeText = this.page.locator(`text=${this.currentPincode || ''}`).first();
+      if (await pincodeText.isVisible({ timeout: 500 })) {
+        await pincodeText.click();
+        return true;
+      }
+    } catch {
+      // Ignore
+    }
+
+    return false;
   }
 
   /**
@@ -422,7 +457,9 @@ class EcommerceScraper extends BaseScraper {
       '[class*="confirm"] button',
       'button[class*="confirm"]',
       'button:has-text("Done")',
-      'button:has-text("Save")'
+      'button:has-text("Save")',
+      'button:has-text("Set Location")',
+      'button:has-text("Deliver Here")'
     ];
 
     for (const selector of confirmSelectors) {
@@ -438,6 +475,9 @@ class EcommerceScraper extends BaseScraper {
         continue;
       }
     }
+
+    // Try to dismiss any remaining modal
+    await this.dismissJioMartPopups();
     return false;
   }
 
