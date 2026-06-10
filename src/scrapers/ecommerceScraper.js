@@ -241,10 +241,21 @@ class EcommerceScraper extends BaseScraper {
 
         // Step 3: Now navigate to product page - prices will load with correct location
         logger.info('Navigating to product page...');
-        await this.goto(url, {
-          waitUntil: 'domcontentloaded',
-          waitForSelector: this.siteConfig.waitSelector
-        });
+        try {
+          await this.goto(url, {
+            waitUntil: 'domcontentloaded',
+            waitForSelector: this.siteConfig.waitSelector
+          });
+        } catch (navError) {
+          // Sometimes JioMart aborts navigation, try again
+          if (navError.message.includes('ERR_ABORTED')) {
+            logger.warn('Navigation aborted, retrying...');
+            await this.page.waitForTimeout(1000);
+            await this.page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+          } else {
+            throw navError;
+          }
+        }
 
         // Wait for React to render product data
         await this.page.waitForTimeout(2000);
