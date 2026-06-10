@@ -231,10 +231,16 @@ class EcommerceScraper extends BaseScraper {
         await this.goto('https://www.jiomart.com/', {
           waitUntil: 'domcontentloaded'
         });
-        await this.page.waitForTimeout(1500);
+        
+        // Wait for location modal to appear (it always appears on fresh browser)
+        await this.page.waitForTimeout(2500);
 
         // Step 2: Set location using pincode
         const locationSet = await this.handleJioMartPincodeLocation(pincode);
+        
+        if (!locationSet) {
+          logger.warn('Location may not be set correctly, continuing anyway...');
+        }
         
         // Wait for location to be saved
         await this.page.waitForTimeout(1500);
@@ -348,23 +354,16 @@ class EcommerceScraper extends BaseScraper {
       // Check if location modal is already open (first visit)
       const enableLocationModal = this.page.locator('text=Enable Location Services').first();
 
-      if (await enableLocationModal.isVisible({ timeout: 1500 })) {
+      if (await enableLocationModal.isVisible({ timeout: 3000 })) {
         // Click "Select Location Manually" to get to pincode search
         const manualBtn = this.page.locator('text=Select Location Manually').first();
-        if (await manualBtn.isVisible({ timeout: 800 })) {
+        if (await manualBtn.isVisible({ timeout: 1500 })) {
           await manualBtn.click();
           logger.info('Clicked "Select Location Manually"');
-          await this.page.waitForTimeout(1000);
-        }
-      } else {
-        // Modal not showing - try clicking on location in header
-        // Use very specific selector to avoid clicking wrong elements
-        const locationBtn = this.page.locator('[data-test="header-location"], [class*="headerLocation"], [class*="location-header"]').first();
-        if (await locationBtn.isVisible({ timeout: 500 })) {
-          await locationBtn.click();
-          logger.info('Clicked location in header');
           await this.page.waitForTimeout(1500);
         }
+      } else {
+        logger.warn('Enable Location modal not found, checking for search input directly...');
       }
 
       // Look for the search input
