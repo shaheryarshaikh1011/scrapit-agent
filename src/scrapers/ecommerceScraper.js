@@ -332,18 +332,18 @@ class EcommerceScraper extends BaseScraper {
       this.currentPincode = pincode;
 
       // Wait briefly for page to stabilize
-      await this.page.waitForTimeout(1500);
+      await this.page.waitForTimeout(1000);
 
       // Check if location modal is already open
       const enableLocationModal = this.page.locator('text=Enable Location Services').first();
 
-      if (await enableLocationModal.isVisible({ timeout: 1500 })) {
+      if (await enableLocationModal.isVisible({ timeout: 1000 })) {
         // Click "Select Location Manually" to get to pincode search
         const manualBtn = this.page.locator('text=Select Location Manually').first();
-        if (await manualBtn.isVisible({ timeout: 1000 })) {
+        if (await manualBtn.isVisible({ timeout: 800 })) {
           await manualBtn.click();
           logger.info('Clicked "Select Location Manually"');
-          await this.page.waitForTimeout(1500);
+          await this.page.waitForTimeout(1000);
         }
       }
 
@@ -358,7 +358,7 @@ class EcommerceScraper extends BaseScraper {
       let searchInput = null;
       for (const selector of searchInputSelectors) {
         const input = this.page.locator(selector).first();
-        if (await input.isVisible({ timeout: 1500 })) {
+        if (await input.isVisible({ timeout: 1000 })) {
           searchInput = input;
           logger.info(`Found search input: ${selector}`);
           break;
@@ -368,23 +368,23 @@ class EcommerceScraper extends BaseScraper {
       if (searchInput) {
         // Clear and type pincode
         await searchInput.click();
-        await this.page.waitForTimeout(300);
-        await searchInput.fill('');
         await this.page.waitForTimeout(200);
+        await searchInput.fill('');
+        await this.page.waitForTimeout(150);
 
         // Type pincode - faster typing
-        await searchInput.type(pincode, { delay: 100 });
+        await searchInput.type(pincode, { delay: 80 });
         logger.info(`Typed pincode: ${pincode}`);
 
         // Wait for Google Places autocomplete dropdown
-        await this.page.waitForTimeout(2000);
+        await this.page.waitForTimeout(1500);
 
         // Click on first suggestion in dropdown
         const suggestionClicked = await this.clickLocationSuggestion();
 
         if (suggestionClicked) {
           // Wait for map to load
-          await this.page.waitForTimeout(2000);
+          await this.page.waitForTimeout(1500);
 
           // Click "Confirm Location" button
           const confirmed = await this.clickConfirmLocation();
@@ -397,7 +397,7 @@ class EcommerceScraper extends BaseScraper {
           // No suggestion found, try pressing Enter
           logger.info('No suggestion dropdown, trying Enter key');
           await searchInput.press('Enter');
-          await this.page.waitForTimeout(2000);
+          await this.page.waitForTimeout(1500);
           await this.clickConfirmLocation();
         }
       } else {
