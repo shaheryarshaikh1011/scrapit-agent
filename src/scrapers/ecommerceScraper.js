@@ -613,7 +613,9 @@ class EcommerceScraper extends BaseScraper {
    * Extract products using browser context (handles JavaScript-rendered content)
    */
   async extractProductsFromPage() {
-    const products = await this.page.evaluate(() => {
+    const baseUrl = this.page.url();
+    
+    const products = await this.page.evaluate((baseUrl) => {
       const items = [];
       
       // Find all product card-like elements
@@ -645,15 +647,60 @@ class EcommerceScraper extends BaseScraper {
         const imgEl = card.querySelector('img');
         const image = imgEl ? (imgEl.src || imgEl.dataset.src) : null;
         
-        // Get link - check for click handlers or nearest anchor
+        // Get link - multiple approaches
         let link = null;
-        const anchorEl = card.querySelector('a[href]') || card.closest('a');
-        if (anchorEl && anchorEl.href && !anchorEl.href.includes('javascript:')) {
-          link = anchorEl.href;
+        
+        // 1. Check for anchor tags with valid href
+        const anchors = card.querySelectorAll('a[href]');
+        for (const a of anchors) {
+          if (a.href && !a.href.includes('javascript:') && a.href !== '#' && a.href.length > baseUrl.length) {
+            link = a.href;
+            break;
+          }
         }
-        // Check for data attributes
+        
+        // 2. Check if card itself or parent is an anchor
         if (!link) {
-          link = card.dataset.productUrl || card.dataset.url || card.dataset.href;
+          const parentAnchor = card.closest('a[href]');
+          if (parentAnchor && parentAnchor.href && !parentAnchor.href.includes('javascript:')) {
+            link = parentAnchor.href;
+          }
+        }
+        
+        // 3. Check for data attributes that might contain product ID or URL
+        if (!link) {
+          const productId = card.dataset.productId || card.dataset.id || card.dataset.sku || 
+                           card.getAttribute('data-product-id') || card.getAttribute('data-item-id');
+          if (productId) {
+            // Try to construct URL from product ID
+            link = `/product/${productId}`;
+          }
+        }
+        
+        // 4. Check for onclick handlers that might reveal product URL
+        if (!link) {
+          const clickableEl = card.querySelector('[onclick]') || (card.hasAttribute('onclick') ? card : null);
+          if (clickableEl) {
+            const onclick = clickableEl.getAttribute('onclick');
+            const urlMatch = onclick?.match(/['"](\/[^'"]+)['"]/);
+            if (urlMatch) {
+              link = urlMatch[1];
+            }
+          }
+        }
+        
+        // 5. Try to find hidden links or product URLs in any data attributes
+        if (!link) {
+          const allElements = card.querySelectorAll('*');
+          for (const el of allElements) {
+            for (const attr of el.attributes) {
+              if (attr.value.includes('/product/') || attr.value.includes('/p/') || attr.value.includes('/dp/')) {
+                link = attr.value;
+                break;
+              }
+            }
+            if (link) break;
+          }
         }
         
         // Get all price-related text
@@ -731,7 +778,7 @@ class EcommerceScraper extends BaseScraper {
       });
       
       return items;
-    });
+    }, baseUrl);
     
     // Convert relative links to absolute
     return products.map(p => ({
