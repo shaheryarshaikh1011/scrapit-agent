@@ -1136,7 +1136,13 @@ class EcommerceScraper extends BaseScraper {
 
         // Final fallback - look near "Add to Cart"
         if (!data.price || data.price === 0) {
-          const addToCart = document.querySelector('button:has-text("Add to Cart"), [class*="addToCart"]');
+          const addToCartBtns = document.querySelectorAll('button, [class*="addToCart"]');
+          let addToCart = null;
+          addToCartBtns.forEach(btn => {
+            if (btn.textContent && btn.textContent.toLowerCase().includes('add to cart')) {
+              addToCart = btn;
+            }
+          });
           if (addToCart) {
             const parent = addToCart.closest('[class*="product"], [class*="pdp"], section');
             if (parent) {
