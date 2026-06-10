@@ -202,18 +202,25 @@ class EcommerceScraper extends BaseScraper {
 
   /**
    * Compare product prices across multiple pincodes
+   * Returns consolidated SKU data with prices for each pincode
    */
   async comparePrices(url, pincodes = [], options = {}) {
-    const results = {
+    // First scrape to get base product info
+    let baseProduct = null;
+
+    const skuData = {
       url,
-      product: null,
-      comparison: [],
+      sku: null,
+      title: null,
+      brand: null,
+      images: [],
+      pincodeData: [],
       scrapedAt: new Date().toISOString()
     };
 
     for (let i = 0; i < pincodes.length; i++) {
       const pincode = pincodes[i];
-      logger.info(`[${i + 1}/${pincodes.length}] Checking price for pincode: ${pincode}`);
+      logger.info(`[${i + 1}/${pincodes.length}] Checking pincode: ${pincode}`);
 
       try {
         await this.init();
@@ -225,32 +232,34 @@ class EcommerceScraper extends BaseScraper {
         });
 
         // Set location using pincode
-        await this.handleJioMartPincodeLocation(pincode);
+        const locationSet = await this.handleJioMartPincodeLocation(pincode);
 
-        // Wait for content to update
-        await this.page.waitForTimeout(2000);
+        // Wait for content to fully update after location change
+        await this.page.waitForTimeout(3000);
         await this.handleDynamicContent();
 
-        // Get location info
+        // Get current location display
         const locationInfo = await this.getCurrentLocation();
 
         // Scrape product data
-        const html = await this.browser.getHtml();
-        const productData = await this.scrapeProductPage(html);
+        const productData = await this.scrapeJioMartProductPage();
 
-        // Store first product info as reference
-        if (!results.product) {
-          results.product = {
-            title: productData.title,
-            brand: productData.brand,
-            sku: productData.sku,
-            images: productData.images
-          };
+        // Set base product info from first successful scrape
+        if (!skuData.sku && productData.sku) {
+          skuData.sku = productData.sku;
+          skuData.title = productData.title;
+          skuData.brand = productData.brand;
+          skuData.images = productData.images;
+          skuData.description = productData.description;
+          skuData.rating = productData.rating;
+          skuData.reviewCount = productData.reviewCount;
+          skuData.weight = productData.weight;
         }
 
-        results.comparison.push({
+        // Add pincode-specific data
+        skuData.pincodeData.push({
           pincode,
-          location: locationInfo,
+          location: locationInfo?.display || null,
           price: productData.price,
           priceText: productData.priceText,
           originalPrice: productData.originalPrice,
@@ -258,42 +267,46 @@ class EcommerceScraper extends BaseScraper {
           discount: productData.discount,
           inStock: productData.inStock,
           availability: productData.availability,
-          variants: productData.variants
+          variants: productData.variants || [],
+          deliveryInfo: null // Can be extended to capture delivery time
         });
 
         logger.success(`Pincode ${pincode}: ${productData.priceText || 'N/A'} - ${productData.availability}`);
 
       } catch (error) {
         logger.error(`Failed for pincode ${pincode}: ${error.message}`);
-        results.comparison.push({
+        skuData.pincodeData.push({
           pincode,
           error: error.message,
-          inStock: false
+          price: null,
+          inStock: false,
+          availability: 'Error'
         });
       } finally {
         await this.close();
       }
 
-      // Small delay between requests
+      // Small delay between requests to avoid rate limiting
       if (i < pincodes.length - 1) {
-        await sleepWithJitter(1000, 500);
+        await sleepWithJitter(2000, 1000);
       }
     }
 
-    // Calculate price statistics
-    const validPrices = results.comparison.filter(c => c.price && !c.error);
+    // Calculate price statistics across pincodes
+    const validPrices = skuData.pincodeData.filter(p => p.price && !p.error);
     if (validPrices.length > 0) {
-      const prices = validPrices.map(c => c.price);
-      results.priceStats = {
+      const prices = validPrices.map(p => p.price);
+      skuData.priceRange = {
         min: Math.min(...prices),
         max: Math.max(...prices),
-        avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
-        cheapestAt: validPrices.find(c => c.price === Math.min(...prices))?.pincode,
-        mostExpensiveAt: validPrices.find(c => c.price === Math.max(...prices))?.pincode
+        avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length)
       };
+      skuData.cheapestPincode = validPrices.find(p => p.price === skuData.priceRange.min)?.pincode;
+      skuData.availableAt = validPrices.filter(p => p.inStock).map(p => p.pincode);
+      skuData.unavailableAt = skuData.pincodeData.filter(p => !p.inStock || p.error).map(p => p.pincode);
     }
 
-    return results;
+    return skuData;
   }
 
   /**
