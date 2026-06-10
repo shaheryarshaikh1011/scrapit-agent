@@ -187,6 +187,115 @@ program
     }
   });
 
+// Price comparison across pincodes command
+program
+  .command('compare <url>')
+  .description('Compare product prices across multiple pincodes/locations')
+  .option('-p, --pincodes <list>', 'Comma-separated list of pincodes to compare (e.g., 400001,110001,560001)')
+  .option('-o, --output <dir>', 'Output directory', './output')
+  .option('--headless', 'Run in headless mode', true)
+  .option('--no-headless', 'Run with browser visible')
+  .option('--json', 'Output only JSON (no formatting)')
+  .action(async (url, options) => {
+    if (!options.pincodes) {
+      console.error(chalk.red('Error: Please provide pincodes using -p or --pincodes option'));
+      console.log(chalk.gray('Example: scrapit compare <url> -p 400001,110001,560001'));
+      process.exit(1);
+    }
+
+    const pincodes = options.pincodes.split(',').map(p => p.trim());
+    console.log(chalk.cyan(`\n📍 Comparing prices across ${pincodes.length} locations...\n`));
+
+    const spinner = ora('Initializing...').start();
+
+    try {
+      const EcommerceScraper = require('../src/scrapers/ecommerceScraper');
+      const scraper = new EcommerceScraper({
+        headless: options.headless,
+        output: options.output
+      });
+
+      spinner.text = `Comparing prices for ${pincodes.length} pincodes...`;
+      
+      const results = await scraper.comparePrices(url, pincodes, {});
+
+      spinner.succeed('Price comparison complete!');
+
+      // Save results
+      const outputFile = path.join(options.output, `price-compare-${timestamp()}.json`);
+      saveJson(outputFile, results);
+      console.log(chalk.green(`Results saved: ${outputFile}`));
+
+      // Output results
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+      } else {
+        printComparisonResults(results);
+      }
+
+    } catch (error) {
+      spinner.fail('Price comparison failed');
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+/**
+ * Pretty print price comparison results
+ */
+function printComparisonResults(results) {
+  console.log('\n' + chalk.bold.cyan('═'.repeat(60)));
+  console.log(chalk.bold.cyan('  PRICE COMPARISON RESULTS'));
+  console.log(chalk.bold.cyan('═'.repeat(60)) + '\n');
+
+  if (results.product) {
+    console.log(chalk.bold('Product:'));
+    console.log(`  ${chalk.white(results.product.title || 'N/A')}`);
+    if (results.product.brand) console.log(`  Brand: ${results.product.brand}`);
+    console.log('');
+  }
+
+  console.log(chalk.bold('Price by Location:'));
+  console.log(chalk.gray('─'.repeat(60)));
+  
+  results.comparison.forEach((item, index) => {
+    const statusIcon = item.error ? '❌' : (item.inStock ? '✅' : '⚠️');
+    const priceColor = item.inStock ? chalk.green : chalk.gray;
+    
+    console.log(`\n  ${statusIcon} Pincode: ${chalk.bold(item.pincode)}`);
+    
+    if (item.error) {
+      console.log(`     ${chalk.red(`Error: ${item.error}`)}`);
+    } else {
+      if (item.location?.display) {
+        console.log(`     📍 ${chalk.gray(item.location.display)}`);
+      }
+      console.log(`     💰 Price: ${priceColor(item.priceText || 'N/A')}`);
+      if (item.originalPriceText) {
+        console.log(`     📊 MRP: ${chalk.gray(item.originalPriceText)} (${chalk.yellow(item.discount || 'No discount')})`);
+      }
+      console.log(`     📦 ${item.inStock ? chalk.green('In Stock') : chalk.red(item.availability || 'Out of Stock')}`);
+    }
+  });
+
+  // Price statistics
+  if (results.priceStats) {
+    console.log('\n' + chalk.gray('─'.repeat(60)));
+    console.log(chalk.bold('\n📈 Price Statistics:'));
+    console.log(`  Lowest:  ${chalk.green(`₹${results.priceStats.min}`)} at pincode ${chalk.bold(results.priceStats.cheapestAt)}`);
+    console.log(`  Highest: ${chalk.red(`₹${results.priceStats.max}`)} at pincode ${chalk.bold(results.priceStats.mostExpensiveAt)}`);
+    console.log(`  Average: ${chalk.yellow(`₹${results.priceStats.avg}`)}`);
+    
+    if (results.priceStats.max > results.priceStats.min) {
+      const savings = results.priceStats.max - results.priceStats.min;
+      const savingsPercent = Math.round((savings / results.priceStats.max) * 100);
+      console.log(`\n  💡 ${chalk.green(`You can save ₹${savings} (${savingsPercent}%)`)} by ordering from ${chalk.bold(results.priceStats.cheapestAt)}!`);
+    }
+  }
+
+  console.log('\n' + chalk.gray('─'.repeat(60)));
+}
+
 /**
  * Pretty print results
  */

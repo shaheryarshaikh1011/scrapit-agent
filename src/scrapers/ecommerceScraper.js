@@ -137,7 +137,8 @@ class EcommerceScraper extends BaseScraper {
       type = 'auto',  // auto, product, listing
       maxPages = 1,
       maxProducts = 100,
-      location = null  // Default location for sites that require it
+      location = null,  // Default location for sites that require it
+      pincode = null    // Specific pincode to set
     } = options;
 
     try {
@@ -152,7 +153,12 @@ class EcommerceScraper extends BaseScraper {
       });
 
       // Handle site-specific popups (like location modals)
-      await this.handleSitePopups(url, location);
+      // If pincode is provided, use pincode-based location setting
+      if (pincode) {
+        await this.handleJioMartPincodeLocation(pincode);
+      } else {
+        await this.handleSitePopups(url, location);
+      }
 
       // Re-fetch HTML after popups (page might have changed)
       await this.page.waitForTimeout(1000);
@@ -173,11 +179,16 @@ class EcommerceScraper extends BaseScraper {
         data = await this.scrapeProductPage(html);
       }
 
+      // Add pincode/location info to result
+      const locationInfo = await this.getCurrentLocation();
+
       return {
         url: currentUrl,
         site: this.siteConfig.name,
         pageType,
         scrapedAt: new Date().toISOString(),
+        location: locationInfo,
+        pincode: pincode || location,
         ...data
       };
 
@@ -186,6 +197,283 @@ class EcommerceScraper extends BaseScraper {
       throw error;
     } finally {
       await this.close();
+    }
+  }
+
+  /**
+   * Compare product prices across multiple pincodes
+   */
+  async comparePrices(url, pincodes = [], options = {}) {
+    const results = {
+      url,
+      product: null,
+      comparison: [],
+      scrapedAt: new Date().toISOString()
+    };
+
+    for (let i = 0; i < pincodes.length; i++) {
+      const pincode = pincodes[i];
+      logger.info(`[${i + 1}/${pincodes.length}] Checking price for pincode: ${pincode}`);
+
+      try {
+        await this.init();
+        this.siteConfig = this.getSiteConfig(url);
+
+        await this.goto(url, {
+          waitUntil: 'domcontentloaded',
+          waitForSelector: this.siteConfig.waitSelector
+        });
+
+        // Set location using pincode
+        await this.handleJioMartPincodeLocation(pincode);
+
+        // Wait for content to update
+        await this.page.waitForTimeout(2000);
+        await this.handleDynamicContent();
+
+        // Get location info
+        const locationInfo = await this.getCurrentLocation();
+
+        // Scrape product data
+        const html = await this.browser.getHtml();
+        const productData = await this.scrapeProductPage(html);
+
+        // Store first product info as reference
+        if (!results.product) {
+          results.product = {
+            title: productData.title,
+            brand: productData.brand,
+            sku: productData.sku,
+            images: productData.images
+          };
+        }
+
+        results.comparison.push({
+          pincode,
+          location: locationInfo,
+          price: productData.price,
+          priceText: productData.priceText,
+          originalPrice: productData.originalPrice,
+          originalPriceText: productData.originalPriceText,
+          discount: productData.discount,
+          inStock: productData.inStock,
+          availability: productData.availability,
+          variants: productData.variants
+        });
+
+        logger.success(`Pincode ${pincode}: ${productData.priceText || 'N/A'} - ${productData.availability}`);
+
+      } catch (error) {
+        logger.error(`Failed for pincode ${pincode}: ${error.message}`);
+        results.comparison.push({
+          pincode,
+          error: error.message,
+          inStock: false
+        });
+      } finally {
+        await this.close();
+      }
+
+      // Small delay between requests
+      if (i < pincodes.length - 1) {
+        await sleepWithJitter(1000, 500);
+      }
+    }
+
+    // Calculate price statistics
+    const validPrices = results.comparison.filter(c => c.price && !c.error);
+    if (validPrices.length > 0) {
+      const prices = validPrices.map(c => c.price);
+      results.priceStats = {
+        min: Math.min(...prices),
+        max: Math.max(...prices),
+        avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
+        cheapestAt: validPrices.find(c => c.price === Math.min(...prices))?.pincode,
+        mostExpensiveAt: validPrices.find(c => c.price === Math.max(...prices))?.pincode
+      };
+    }
+
+    return results;
+  }
+
+  /**
+   * Handle JioMart location setting via pincode search
+   */
+  async handleJioMartPincodeLocation(pincode) {
+    try {
+      logger.info(`Setting location to pincode: ${pincode}`);
+      
+      // Wait for page to load
+      await this.page.waitForTimeout(2000);
+
+      // Check if location modal is already open, if not click on location
+      const locationModal = this.page.locator('text=Choose your delivery address').first();
+      const enableLocationModal = this.page.locator('text=Enable Location Services').first();
+      
+      if (await enableLocationModal.isVisible({ timeout: 2000 })) {
+        // Click "Select Location Manually" to get to pincode search
+        const manualBtn = this.page.locator('text=Select Location Manually').first();
+        if (await manualBtn.isVisible({ timeout: 1500 })) {
+          await manualBtn.click();
+          logger.info('Clicked "Select Location Manually"');
+          await this.page.waitForTimeout(1500);
+        }
+      }
+      
+      // Look for the search input in the address modal
+      const searchInputSelectors = [
+        'input[placeholder*="Search"]',
+        'input[placeholder*="area"]',
+        'input[placeholder*="landmark"]',
+        'input[placeholder*="pincode"]',
+        '[class*="search"] input',
+        '[class*="address"] input'
+      ];
+
+      let searchInput = null;
+      for (const selector of searchInputSelectors) {
+        const input = this.page.locator(selector).first();
+        if (await input.isVisible({ timeout: 1500 })) {
+          searchInput = input;
+          logger.info(`Found search input: ${selector}`);
+          break;
+        }
+      }
+
+      if (!searchInput) {
+        // Try clicking on location button in header to open modal
+        const locationBtn = this.page.locator('[class*="location"], [class*="deliver"], [class*="pincode"]').first();
+        if (await locationBtn.isVisible({ timeout: 1500 })) {
+          await locationBtn.click();
+          await this.page.waitForTimeout(1500);
+          
+          // Try again to find search input
+          for (const selector of searchInputSelectors) {
+            const input = this.page.locator(selector).first();
+            if (await input.isVisible({ timeout: 1000 })) {
+              searchInput = input;
+              break;
+            }
+          }
+        }
+      }
+
+      if (searchInput) {
+        // Clear and type pincode
+        await searchInput.click();
+        await searchInput.fill('');
+        await this.page.waitForTimeout(300);
+        await searchInput.type(pincode, { delay: 100 });
+        logger.info(`Typed pincode: ${pincode}`);
+        
+        // Wait for dropdown suggestions
+        await this.page.waitForTimeout(2000);
+
+        // Click on first suggestion in dropdown
+        const suggestionSelectors = [
+          '[class*="suggestion"]',
+          '[class*="dropdown"] [class*="item"]',
+          '[class*="autocomplete"] li',
+          '[class*="result"]',
+          '[class*="option"]'
+        ];
+
+        let clicked = false;
+        for (const selector of suggestionSelectors) {
+          const suggestion = this.page.locator(selector).first();
+          if (await suggestion.isVisible({ timeout: 1500 })) {
+            await suggestion.click();
+            logger.info('Clicked on location suggestion');
+            clicked = true;
+            await this.page.waitForTimeout(2000);
+            break;
+          }
+        }
+
+        // If no suggestion dropdown, try pressing Enter
+        if (!clicked) {
+          await searchInput.press('Enter');
+          await this.page.waitForTimeout(2000);
+        }
+
+        // Look for "Confirm Location" button (after map appears)
+        await this.clickConfirmLocation();
+        
+      } else {
+        logger.warn('Could not find search input for pincode');
+        // Fallback to enable location
+        await this.handleJioMartEnableLocationModal();
+      }
+
+    } catch (error) {
+      logger.warn(`Pincode location setting failed: ${error.message}`);
+      // Fallback
+      await this.handleJioMartEnableLocationModal();
+    }
+  }
+
+  /**
+   * Click "Confirm Location" button after map selection
+   */
+  async clickConfirmLocation() {
+    const confirmSelectors = [
+      'button:has-text("Confirm Location")',
+      'button:has-text("Confirm")',
+      '[class*="confirm"] button',
+      'button[class*="confirm"]',
+      'button:has-text("Done")',
+      'button:has-text("Save")'
+    ];
+
+    for (const selector of confirmSelectors) {
+      try {
+        const btn = this.page.locator(selector).first();
+        if (await btn.isVisible({ timeout: 2000 })) {
+          await btn.click();
+          logger.success('Clicked "Confirm Location"');
+          await this.page.waitForTimeout(3000);
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Get current location from page
+   */
+  async getCurrentLocation() {
+    try {
+      const locationInfo = await this.page.evaluate(() => {
+        // Try to find location display in header
+        const locationSelectors = [
+          '[class*="location"] [class*="text"]',
+          '[class*="deliver"] span',
+          '[class*="pincode"]',
+          '[class*="address"]'
+        ];
+
+        for (const selector of locationSelectors) {
+          const el = document.querySelector(selector);
+          if (el && el.textContent.trim()) {
+            const text = el.textContent.trim();
+            // Extract pincode if present
+            const pincodeMatch = text.match(/\d{6}/);
+            return {
+              display: text.substring(0, 100),
+              pincode: pincodeMatch ? pincodeMatch[0] : null
+            };
+          }
+        }
+
+        return null;
+      });
+
+      return locationInfo;
+    } catch {
+      return null;
     }
   }
 
