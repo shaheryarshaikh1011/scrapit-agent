@@ -1196,28 +1196,16 @@ class EcommerceScraper extends BaseScraper {
         }
       }
 
-      // DOM fallback for availability - check for "Currently unavailable" text
-      if (data.availability === null) {
-        // First check if page shows "Currently unavailable"
-        const pageText = document.body.textContent.toLowerCase();
-        if (pageText.includes('currently unavailable')) {
-          data.inStock = false;
-          data.availability = 'Currently Unavailable';
-        } else {
-          // Check for Add to Cart button
-          let hasAddToCartButton = false;
-          document.querySelectorAll('button').forEach(btn => {
-            if (btn.textContent.toLowerCase().includes('add to cart')) {
-              hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
-            }
-          });
-          data.inStock = hasAddToCartButton;
-          data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
-        }
-      }
+      // Check DOM for "Currently unavailable" text - this overrides APP_DATA
+      // JioMart shows this text when product is unavailable at the current location
+      const pageText = document.body.textContent;
+      const hasUnavailableText = pageText.includes('Currently unavailable') || 
+                                  pageText.includes('currently unavailable');
       
-      // Final check: If unavailable, clear prices (they're stale/cached)
-      if (!data.inStock || data.availability === 'Currently Unavailable') {
+      if (hasUnavailableText) {
+        // Explicitly unavailable - clear everything
+        data.inStock = false;
+        data.availability = 'Currently Unavailable';
         data.price = null;
         data.priceText = null;
         data.originalPrice = null;
