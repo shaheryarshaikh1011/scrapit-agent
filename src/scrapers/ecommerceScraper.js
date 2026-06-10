@@ -154,21 +154,27 @@ class EcommerceScraper extends BaseScraper {
       // Handle site-specific popups (like location modals)
       await this.handleSitePopups(url, location);
 
+      // Re-fetch HTML after popups (page might have changed)
+      await this.page.waitForTimeout(1000);
+      
       // Wait for dynamic content and handle lazy loading
       await this.handleDynamicContent();
 
       const html = await this.browser.getHtml();
+      const currentUrl = this.page.url();
       const pageType = type === 'auto' ? this.detectPageType(html) : type;
 
       let data;
       if (pageType === 'listing') {
-        data = await this.scrapeListingWithPagination(url, maxPages, maxProducts);
+        data = await this.scrapeListingWithPagination(currentUrl, maxPages, maxProducts);
+      } else if (pageType === 'homepage') {
+        data = await this.scrapeHomepage(html);
       } else {
         data = await this.scrapeProductPage(html);
       }
 
       return {
-        url,
+        url: currentUrl,
         site: this.siteConfig.name,
         pageType,
         scrapedAt: new Date().toISOString(),
@@ -209,9 +215,20 @@ class EcommerceScraper extends BaseScraper {
       await this.page.waitForTimeout(2000);
       
       // First try to handle the "Enable Location Services" modal
-      await this.handleJioMartEnableLocationModal();
+      const locationSet = await this.handleJioMartEnableLocationModal();
       
-      // Then try to handle the "Choose your delivery address" modal
+      // If location was enabled, wait for page to potentially reload/navigate
+      if (locationSet) {
+        try {
+          // Wait for any navigation to complete
+          await this.page.waitForLoadState('networkidle', { timeout: 15000 });
+        } catch {
+          // Timeout is fine, page might already be stable
+        }
+        await this.page.waitForTimeout(3000);
+      }
+      
+      // Then try to handle any remaining "Choose your delivery address" modal
       await this.handleJioMartChooseAddressModal();
       
     } catch (error) {
@@ -407,21 +424,23 @@ class EcommerceScraper extends BaseScraper {
    * Handle dynamic content loading
    */
   async handleDynamicContent() {
-    // Scroll to trigger lazy loading
+    // Scroll to trigger lazy loading - do more scrolls for JioMart
     if (this.siteConfig.lazyLoad) {
-      await this.browser.scrollToBottom(5);
+      await this.browser.scrollToBottom(10);
     }
 
-    // Wait for images to load
-    await this.page.waitForTimeout(2000);
+    // Wait longer for images and products to load
+    await this.page.waitForTimeout(3000);
 
     // Click "Load More" buttons if present
     try {
       const loadMoreSelectors = [
         'button:has-text("Load More")',
         'button:has-text("View More")',
+        'button:has-text("Show More")',
         '[class*="load-more"]',
-        '[class*="view-more"]'
+        '[class*="view-more"]',
+        '[class*="show-more"]'
       ];
 
       for (const selector of loadMoreSelectors) {
@@ -437,14 +456,43 @@ class EcommerceScraper extends BaseScraper {
   }
 
   /**
-   * Detect if page is product or listing
+   * Detect page type - homepage, listing, or product
    */
   detectPageType(html) {
     const $ = cheerio.load(html);
+    const url = this.page.url();
+    
+    // Check if it's the homepage
+    const isHomepage = url === 'https://www.jiomart.com/' || 
+                       url === 'https://www.jiomart.com' ||
+                       url.match(/^https?:\/\/[^\/]+\/?$/);
+    
+    if (isHomepage) {
+      return 'homepage';
+    }
+    
+    // Check for product page indicators
+    const productIndicators = [
+      $('[class*="pdp"]').length > 0,
+      $('[class*="product-detail"]').length > 0,
+      $('h1[class*="product"]').length > 0,
+      url.includes('/p/') || url.includes('/product/')
+    ];
+    
+    if (productIndicators.some(Boolean)) {
+      return 'product';
+    }
+    
+    // Check for listing page
     const listingSelector = this.siteConfig.listing.container;
     const productCards = $(listingSelector).length;
     
-    return productCards > 2 ? 'listing' : 'product';
+    if (productCards > 2) {
+      return 'listing';
+    }
+    
+    // Default to homepage if we can't determine
+    return 'homepage';
   }
 
   /**
@@ -473,6 +521,366 @@ class EcommerceScraper extends BaseScraper {
       rating: this.extractText($, config.rating),
       availability: this.extractText($, config.availability),
       inStock: this.checkInStock($)
+    };
+  }
+
+  /**
+   * Scrape homepage - extract categories, featured products, banners
+   */
+  async scrapeHomepage(html) {
+    const $ = cheerio.load(html);
+    
+    // Extract categories from navigation and category sections
+    const categories = [];
+    const categorySelectors = [
+      'a[href*="/c/"]',
+      'a[href*="/category"]', 
+      'a[href*="/sections/"]',
+      '[class*="category"] a',
+      '[class*="nav"] a',
+      '[class*="menu"] a',
+      'nav a',
+      'header a'
+    ];
+    
+    for (const selector of categorySelectors) {
+      $(selector).each((_, el) => {
+        const name = cleanText($(el).text());
+        const link = $(el).attr('href');
+        if (name && name.length > 1 && name.length < 50 && link) {
+          categories.push({ name, link: this.absoluteUrl(link) });
+        }
+      });
+    }
+    
+    // Extract featured/promoted products using browser evaluation for better link extraction
+    let featuredProducts = [];
+    try {
+      featuredProducts = await this.extractProductsFromPage();
+    } catch (e) {
+      logger.warn(`Browser extraction failed, falling back to HTML parsing: ${e.message}`);
+      featuredProducts = this.extractProductsFromHtml($, categories);
+    }
+    
+    // Extract banners/promotions
+    const banners = [];
+    $('img[src*="banner"], img[src*="promo"], img[src*="hero"], [class*="banner"] img, [class*="carousel"] img, [class*="slider"] img, [class*="hero"] img').each((_, el) => {
+      const src = $(el).attr('src') || $(el).attr('data-src');
+      const alt = $(el).attr('alt') || '';
+      if (src && !src.includes('data:image') && src.length > 10) {
+        banners.push({ image: src, alt: cleanText(alt) });
+      }
+    });
+    
+    // Extract section titles
+    const sections = [];
+    $('h2, h3, [class*="section-title"], [class*="heading"], [class*="widget-title"]').each((_, el) => {
+      const title = cleanText($(el).text());
+      if (title && title.length > 2 && title.length < 100) {
+        sections.push(title);
+      }
+    });
+    
+    // Extract all links for navigation purposes
+    const allLinks = [];
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      const text = cleanText($(el).text());
+      if (href && href.startsWith('/') && text && text.length > 1 && text.length < 50) {
+        allLinks.push({ text, link: this.absoluteUrl(href) });
+      }
+    });
+    
+    // Deduplicate
+    const uniqueCategories = [...new Map(categories.map(c => [c.name, c])).values()].slice(0, 50);
+    const uniqueSections = [...new Set(sections)].slice(0, 30);
+    const uniqueLinks = [...new Map(allLinks.map(l => [l.text, l])).values()].slice(0, 100);
+    
+    return {
+      type: 'homepage',
+      categories: uniqueCategories,
+      featuredProducts: featuredProducts.slice(0, 30),
+      banners: banners.slice(0, 15),
+      sections: uniqueSections,
+      navigation: uniqueLinks,
+      totalCategories: uniqueCategories.length,
+      totalFeaturedProducts: featuredProducts.length,
+      totalLinks: uniqueLinks.length
+    };
+  }
+
+  /**
+   * Extract products using browser context (handles JavaScript-rendered content)
+   */
+  async extractProductsFromPage() {
+    const products = await this.page.evaluate(() => {
+      const items = [];
+      
+      // Find all product card-like elements
+      const cardSelectors = [
+        '[class*="product-card"]',
+        '[class*="plp-card"]',
+        '[class*="item-card"]',
+        '[data-product]',
+        '[class*="card"]'
+      ];
+      
+      let cards = [];
+      for (const selector of cardSelectors) {
+        const found = document.querySelectorAll(selector);
+        if (found.length > 0) {
+          cards = Array.from(found);
+          break;
+        }
+      }
+      
+      cards.forEach(card => {
+        // Get title
+        const titleEl = card.querySelector('h3, h4, h5, [class*="name"], [class*="title"]');
+        const title = titleEl ? titleEl.textContent.trim() : null;
+        
+        if (!title || title.length < 3) return;
+        
+        // Get image
+        const imgEl = card.querySelector('img');
+        const image = imgEl ? (imgEl.src || imgEl.dataset.src) : null;
+        
+        // Get link - check for click handlers or nearest anchor
+        let link = null;
+        const anchorEl = card.querySelector('a[href]') || card.closest('a');
+        if (anchorEl && anchorEl.href && !anchorEl.href.includes('javascript:')) {
+          link = anchorEl.href;
+        }
+        // Check for data attributes
+        if (!link) {
+          link = card.dataset.productUrl || card.dataset.url || card.dataset.href;
+        }
+        
+        // Get all price-related text
+        const priceEls = card.querySelectorAll('[class*="price"], [class*="amount"]');
+        let currentPrice = null;
+        let originalPrice = null;
+        let currentPriceText = null;
+        let originalPriceText = null;
+        
+        priceEls.forEach(priceEl => {
+          const text = priceEl.textContent.trim();
+          const priceMatch = text.match(/₹[\d,]+/);
+          if (priceMatch) {
+            const price = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
+            const classList = priceEl.className.toLowerCase();
+            
+            if (classList.includes('mrp') || classList.includes('original') || classList.includes('strike')) {
+              if (!originalPrice || price > originalPrice) {
+                originalPrice = price;
+                originalPriceText = priceMatch[0];
+              }
+            } else {
+              if (!currentPrice || price < currentPrice) {
+                currentPrice = price;
+                currentPriceText = priceMatch[0];
+              }
+            }
+          }
+        });
+        
+        // If we only found one price, check if there's combined text
+        if (currentPrice && !originalPrice) {
+          const allText = card.textContent;
+          const allPrices = allText.match(/₹[\d,]+/g);
+          if (allPrices && allPrices.length >= 2) {
+            const prices = allPrices.map(p => parseInt(p.replace(/[₹,]/g, '')));
+            currentPrice = Math.min(...prices);
+            originalPrice = Math.max(...prices);
+            currentPriceText = `₹${currentPrice.toLocaleString('en-IN')}`;
+            originalPriceText = `₹${originalPrice.toLocaleString('en-IN')}`;
+          }
+        }
+        
+        // Get rating
+        const ratingEl = card.querySelector('[class*="rating"], [class*="star"], [data-rating]');
+        let rating = null;
+        if (ratingEl) {
+          rating = ratingEl.dataset.rating || ratingEl.getAttribute('aria-label') || ratingEl.textContent.trim();
+          if (rating && rating.length > 50) rating = null;
+        }
+        
+        // Get discount
+        const discountEl = card.querySelector('[class*="discount"], [class*="off"], [class*="save"]');
+        let discount = discountEl ? discountEl.textContent.trim() : null;
+        if (!discount && originalPrice && currentPrice && originalPrice > currentPrice) {
+          discount = `${Math.round((1 - currentPrice / originalPrice) * 100)}% off`;
+        }
+        
+        // Get unit/quantity
+        const unitEl = card.querySelector('[class*="unit"], [class*="qty"], [class*="weight"], [class*="size"], [class*="pack"]');
+        const unit = unitEl ? unitEl.textContent.trim() : null;
+        
+        items.push({
+          title,
+          price: currentPrice,
+          priceText: currentPriceText,
+          originalPrice,
+          originalPriceText,
+          discount,
+          link,
+          image,
+          rating,
+          unit
+        });
+      });
+      
+      return items;
+    });
+    
+    // Convert relative links to absolute
+    return products.map(p => ({
+      ...p,
+      link: p.link ? this.absoluteUrl(p.link) : null
+    }));
+  }
+
+  /**
+   * Fallback: Extract products from HTML (cheerio)
+   */
+  extractProductsFromHtml($, categories) {
+    const featuredProducts = [];
+    const productSelectors = [
+      '.plp-card',
+      '[class*="product-card"]',
+      '[class*="product-item"]',
+      '[class*="item-card"]',
+      '[data-product]',
+      '[class*="carousel-item"]',
+      '[class*="slider-item"]',
+      '[class*="card"]'
+    ];
+    
+    for (const selector of productSelectors) {
+      $(selector).each((_, el) => {
+        const card = $(el);
+        const title = cleanText(
+          card.find('h3, h4, h5, [class*="name"], [class*="title"], [class*="product-name"]').first().text()
+        );
+        
+        const priceData = this.extractPricesFromCard(card);
+        
+        // Extract product link
+        let link = null;
+        card.find('a').each((_, a) => {
+          const href = $(a).attr('href');
+          if (href && href !== '#' && !href.startsWith('javascript:') && href.length > 1) {
+            link = href;
+            return false;
+          }
+        });
+        
+        const image = card.find('img').first().attr('src') || card.find('img').first().attr('data-src');
+        const rating = cleanText(card.find('[class*="rating"], [class*="star"]').first().text()) || null;
+        const discount = cleanText(card.find('[class*="discount"], [class*="off"]').first().text());
+        const unit = cleanText(card.find('[class*="unit"], [class*="qty"], [class*="weight"]').first().text());
+        
+        if (title && title.length > 2 && !categories.some(c => c.name === title)) {
+          featuredProducts.push({
+            title,
+            price: priceData.price,
+            priceText: priceData.priceText,
+            originalPrice: priceData.originalPrice,
+            originalPriceText: priceData.originalPriceText,
+            discount: discount || priceData.discount,
+            link: this.absoluteUrl(link),
+            image,
+            rating,
+            unit: unit || null
+          });
+        }
+      });
+    }
+    
+    return featuredProducts;
+  }
+
+  /**
+   * Extract prices from a product card - separates current price from original/MRP
+   */
+  extractPricesFromCard(card) {
+    // Try to find separate price elements first
+    const currentPriceSelectors = [
+      '[class*="selling-price"]',
+      '[class*="final-price"]',
+      '[class*="sale-price"]',
+      '[class*="offer-price"]',
+      '[class*="sp"]',
+      '.price:not([class*="mrp"]):not([class*="original"]):not([class*="strike"])'
+    ];
+    
+    const originalPriceSelectors = [
+      '[class*="mrp"]',
+      '[class*="original-price"]',
+      '[class*="strike"]',
+      '[class*="was-price"]',
+      '[class*="crossed"]',
+      'del',
+      's'
+    ];
+    
+    let currentPrice = null;
+    let currentPriceText = null;
+    let originalPrice = null;
+    let originalPriceText = null;
+    
+    // Try to get current price from specific selectors
+    for (const selector of currentPriceSelectors) {
+      const el = card.find(selector).first();
+      if (el.length > 0) {
+        currentPriceText = cleanText(el.text());
+        currentPrice = parsePrice(currentPriceText);
+        if (currentPrice) break;
+      }
+    }
+    
+    // Try to get original/MRP price
+    for (const selector of originalPriceSelectors) {
+      const el = card.find(selector).first();
+      if (el.length > 0) {
+        originalPriceText = cleanText(el.text());
+        originalPrice = parsePrice(originalPriceText);
+        if (originalPrice) break;
+      }
+    }
+    
+    // If we couldn't find separate prices, try to parse combined price text
+    if (!currentPrice) {
+      const allPriceText = cleanText(card.find('[class*="price"]').first().text());
+      
+      // Try to split combined price like "₹399₹990" or "₹399 ₹990"
+      const priceMatches = allPriceText.match(/₹[\d,]+/g) || allPriceText.match(/Rs\.?\s*[\d,]+/gi);
+      
+      if (priceMatches && priceMatches.length >= 2) {
+        // First price is usually current, second is original/MRP
+        currentPriceText = priceMatches[0];
+        currentPrice = parsePrice(currentPriceText);
+        originalPriceText = priceMatches[1];
+        originalPrice = parsePrice(originalPriceText);
+      } else if (priceMatches && priceMatches.length === 1) {
+        currentPriceText = priceMatches[0];
+        currentPrice = parsePrice(currentPriceText);
+      }
+    }
+    
+    // Calculate discount if we have both prices
+    let discount = null;
+    if (originalPrice && currentPrice && originalPrice > currentPrice) {
+      const discountPercent = Math.round((1 - currentPrice / originalPrice) * 100);
+      discount = `${discountPercent}% off`;
+    }
+    
+    return {
+      price: currentPrice,
+      priceText: currentPriceText,
+      originalPrice,
+      originalPriceText,
+      discount
     };
   }
 
