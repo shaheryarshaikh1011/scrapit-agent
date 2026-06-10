@@ -1,0 +1,37 @@
+{
+  "name": "scrapit",
+  "version": "1.0.0",
+  "description": "Production-ready web scraper that bypasses anti-bot protection",
+  "main": "src/index.js",
+  "bin": {
+    "scrapit": "./bin/cli.js"
+  },
+  "scripts": {
+    "scrapit": "node bin/cli.js",
+    "start": "node bin/cli.js",
+    "test": "node test/test.js",
+    "postinstall": "npx playwright install chromium"
+  },
+  "keywords": [
+    "scraper",
+    "web-scraper",
+    "anti-bot",
+    "stealth",
+    "ecommerce"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^12.1.0",
+    "ora": "^5.4.1",
+    "playwright": "^1.60.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "user-agents": "^1.1.0",
+    "ws": "^8.18.0"
+  }
+}
