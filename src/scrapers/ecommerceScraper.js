@@ -501,6 +501,13 @@ class EcommerceScraper extends BaseScraper {
   async scrapeProductPage(html) {
     const $ = cheerio.load(html);
     const config = this.siteConfig.product;
+    const url = this.page.url();
+    const domain = extractDomain(url);
+
+    // For JioMart, use browser-based extraction (React content)
+    if (domain.includes('jiomart')) {
+      return await this.scrapeJioMartProductPage();
+    }
 
     const title = this.extractText($, config.title);
     const priceText = this.extractText($, config.price);
@@ -522,6 +529,313 @@ class EcommerceScraper extends BaseScraper {
       availability: this.extractText($, config.availability),
       inStock: this.checkInStock($)
     };
+  }
+
+  /**
+   * Scrape JioMart product page using browser context
+   */
+  async scrapeJioMartProductPage() {
+    // Wait for product content to fully load
+    await this.page.waitForTimeout(3000);
+    
+    const productData = await this.page.evaluate(() => {
+      const data = {
+        type: 'product',
+        title: null,
+        price: null,
+        priceText: null,
+        originalPrice: null,
+        originalPriceText: null,
+        discount: null,
+        image: null,
+        images: [],
+        description: null,
+        brand: null,
+        rating: null,
+        reviewCount: null,
+        availability: null,
+        inStock: true,
+        weight: null,
+        specifications: {}
+      };
+      
+      // Get title from multiple possible locations
+      const titleSelectors = [
+        '[class*="product-description"] h1',
+        '[class*="productDescription"] h1',
+        '[class*="pdp"] h1',
+        'h1[class*="title"]',
+        'h1[class*="name"]',
+        '[class*="product-name"]',
+        '[class*="productName"]'
+      ];
+      
+      for (const sel of titleSelectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent.trim()) {
+          data.title = el.textContent.trim();
+          break;
+        }
+      }
+      
+      // Fallback: extract from breadcrumb or page text
+      if (!data.title) {
+        const descContainer = document.querySelector('[class*="productDescriptionContainer"]');
+        if (descContainer) {
+          // Look for text that matches brand + product pattern
+          const text = descContainer.textContent;
+          // Extract product name - usually appears after brand name
+          const match = text.match(/^(.+?)([\d.]+\s*\(?\d*\s*(?:Ratings?|Reviews?)?\)?)/);
+          if (match) {
+            data.title = match[1].trim();
+          }
+        }
+      }
+      
+      // Get title from image alt
+      if (!data.title) {
+        const mainImg = document.querySelector('img[alt][class*="product"], img[src*="catalog"]');
+        if (mainImg && mainImg.alt) {
+          data.title = mainImg.alt;
+        }
+      }
+      
+      // Clean up title - remove duplicate brand name at start
+      if (data.title) {
+        // Pattern: "Brand Brand Product" -> "Brand Product"
+        const words = data.title.split(' ');
+        if (words.length >= 2 && words[0] === words[1]) {
+          data.title = words.slice(1).join(' ');
+        }
+      }
+      
+      // Get price - look for price elements
+      const priceSelectors = [
+        '[class*="sellingPrice"]',
+        '[class*="selling-price"]',
+        '[class*="finalPrice"]',
+        '[class*="final-price"]',
+        '[class*="offer-price"]',
+        '[class*="pdp-price"]'
+      ];
+      
+      for (const sel of priceSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.textContent.trim();
+          const priceMatch = text.match(/₹[\d,]+/);
+          if (priceMatch) {
+            data.priceText = priceMatch[0];
+            data.price = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
+            break;
+          }
+        }
+      }
+      
+      // If no specific price element, look for ₹ in text
+      if (!data.price) {
+        const allText = document.body.textContent;
+        const priceMatches = allText.match(/₹[\d,]+/g);
+        if (priceMatches && priceMatches.length > 0) {
+          // First price is usually current price
+          data.priceText = priceMatches[0];
+          data.price = parseInt(priceMatches[0].replace(/[₹,]/g, ''));
+          
+          // Look for MRP/original price
+          if (priceMatches.length > 1) {
+            const prices = priceMatches.map(p => parseInt(p.replace(/[₹,]/g, '')));
+            const maxPrice = Math.max(...prices);
+            if (maxPrice > data.price) {
+              data.originalPrice = maxPrice;
+              data.originalPriceText = `₹${maxPrice.toLocaleString('en-IN')}`;
+            }
+          }
+        }
+      }
+      
+      // Get MRP/original price
+      const mrpSelectors = [
+        '[class*="mrp"]',
+        '[class*="original"]',
+        '[class*="striked"]',
+        'del',
+        's'
+      ];
+      
+      for (const sel of mrpSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.textContent.trim();
+          const priceMatch = text.match(/₹[\d,]+/);
+          if (priceMatch) {
+            data.originalPriceText = priceMatch[0];
+            data.originalPrice = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
+            break;
+          }
+        }
+      }
+      
+      // Calculate discount
+      if (data.originalPrice && data.price && data.originalPrice > data.price) {
+        data.discount = `${Math.round((1 - data.price / data.originalPrice) * 100)}% off`;
+      }
+      
+      // Get images
+      const imgSet = new Set();
+      document.querySelectorAll('img[src*="catalog"], img[src*="product"]').forEach(img => {
+        let src = img.src || img.dataset?.src;
+        if (src && !src.includes('data:image')) {
+          // Get higher resolution version
+          src = src.replace(/t\.resize\(w:\d+\)/, 't.resize(w:800)');
+          imgSet.add(src);
+        }
+      });
+      data.images = [...imgSet];
+      data.image = data.images[0] || null;
+      
+      // Get rating
+      const ratingEl = document.querySelector('[class*="rating"]');
+      if (ratingEl) {
+        const ratingMatch = ratingEl.textContent.match(/([\d.]+)\s*(?:\(|$)/);
+        if (ratingMatch) {
+          data.rating = ratingMatch[1];
+        }
+        const reviewMatch = ratingEl.textContent.match(/\((\d+)\)/);
+        if (reviewMatch) {
+          data.reviewCount = parseInt(reviewMatch[1]);
+        }
+      }
+      
+      // Extract rating from text pattern like "3.7(7624)"
+      if (!data.rating) {
+        const bodyText = document.body.textContent;
+        const ratingPattern = /([\d.]+)\s*\((\d+)\s*(?:Ratings?|Reviews?)?\)/i;
+        const match = bodyText.match(ratingPattern);
+        if (match) {
+          data.rating = match[1];
+          data.reviewCount = parseInt(match[2]);
+        }
+      }
+      
+      // Extract all SKU variants (size options)
+      data.variants = [];
+      const sizeSelectors = [
+        '[class*="size"] button',
+        '[class*="Size"] button',
+        '[class*="variant"] button',
+        '[class*="sku"] button',
+        'button[class*="size"]'
+      ];
+      
+      for (const sel of sizeSelectors) {
+        document.querySelectorAll(sel).forEach(btn => {
+          const btnText = btn.textContent.trim();
+          const isSelected = btn.classList.contains('selected') || 
+                            btn.getAttribute('aria-selected') === 'true' ||
+                            btn.closest('[class*="selected"]') !== null;
+          
+          // Check if this specific variant is out of stock
+          const parent = btn.closest('div');
+          const hasOutOfStock = parent ? 
+            parent.querySelector('[class*="out"], [class*="stock"]')?.textContent?.toLowerCase().includes('out') :
+            false;
+          
+          // Extract size and price from button
+          const sizeMatch = btnText.match(/(\d+\s*(?:g|kg|ml|l|pack|pc|pcs))/i);
+          const priceMatch = btnText.match(/₹([\d,]+)/);
+          
+          if (sizeMatch || priceMatch) {
+            data.variants.push({
+              size: sizeMatch ? sizeMatch[1] : null,
+              price: priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : null,
+              priceText: priceMatch ? `₹${priceMatch[1]}` : null,
+              selected: isSelected,
+              inStock: !hasOutOfStock
+            });
+          }
+        });
+      }
+      
+      // Get availability - check for "Add to Cart" button as primary indicator
+      // If Add to Cart is visible and clickable, product is in stock
+      const addToCartBtn = document.querySelector('button:has-text("Add to Cart"), button[class*="add-to-cart"], [class*="addToCart"] button');
+      const addToCartVisible = addToCartBtn && !addToCartBtn.disabled && window.getComputedStyle(addToCartBtn).display !== 'none';
+      
+      // Check if main product area (not variant options) shows "out of stock"
+      const mainProductArea = document.querySelector('[class*="productDescription"], [class*="product-info"]');
+      const mainAreaText = mainProductArea ? mainProductArea.textContent.toLowerCase() : '';
+      
+      // Look for "Out of stock" that's NOT inside variant/size selectors
+      const variantArea = document.querySelector('[class*="size"], [class*="variant"]');
+      const nonVariantText = mainAreaText.replace(variantArea?.textContent?.toLowerCase() || '', '');
+      
+      // Product is in stock if Add to Cart is visible OR no out of stock in main area
+      const hasAddToCart = document.body.textContent.includes('Add to Cart');
+      const mainProductOutOfStock = nonVariantText.includes('currently unavailable') || 
+                                    (nonVariantText.includes('out of stock') && !nonVariantText.includes('add to cart'));
+      
+      data.inStock = hasAddToCart && !mainProductOutOfStock;
+      data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
+      
+      // Update selected variant info
+      const selectedVariant = data.variants.find(v => v.selected);
+      if (selectedVariant) {
+        data.selectedVariant = selectedVariant;
+        data.inStock = selectedVariant.inStock;
+        data.availability = selectedVariant.inStock ? 'In Stock' : 'Currently Unavailable';
+      }
+      
+      // Get brand
+      const brandPatterns = [
+        /Brand\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:Sold|Country|Article|$)/i,
+        /^([A-Z][a-z]+)\s+[A-Z]/
+      ];
+      for (const pattern of brandPatterns) {
+        const match = document.body.textContent.match(pattern);
+        if (match && match[1]) {
+          data.brand = match[1].trim();
+          break;
+        }
+      }
+      
+      // Get weight/quantity
+      const weightMatch = document.body.textContent.match(/(\d+\s*(?:g|kg|ml|l|G|KG|ML|L))\b/i);
+      if (weightMatch) {
+        data.weight = weightMatch[1];
+      }
+      
+      // Get description from accordion or detail sections
+      const descSelectors = [
+        '[class*="productInfo"]',
+        '[class*="product-info"]',
+        '[class*="description"]',
+        '[class*="detail"]'
+      ];
+      
+      for (const sel of descSelectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent.trim().length > 20) {
+          data.description = el.textContent.trim().substring(0, 1000);
+          break;
+        }
+      }
+      
+      // Get specifications
+      document.querySelectorAll('[class*="specification"] tr, [class*="spec"] tr').forEach(row => {
+        const cells = row.querySelectorAll('td, th');
+        if (cells.length >= 2) {
+          const key = cells[0].textContent.trim();
+          const value = cells[1].textContent.trim();
+          if (key && value) {
+            data.specifications[key] = value;
+          }
+        }
+      });
+      
+      return data;
+    });
+    
+    return productData;
   }
 
   /**
