@@ -26,6 +26,7 @@ program
   .option('-p, --proxy <url>', 'Proxy server URL')
   .option('--pages <num>', 'Max pages to scrape (listing)', '1')
   .option('--products <num>', 'Max products to scrape', '100')
+  .option('-l, --location <pincode>', 'Default location/pincode for sites like JioMart (default: 400001 Mumbai)')
   .option('-d, --duration <ms>', 'Monitor duration for realtime mode', '30000')
   .option('-s, --selectors <list>', 'CSS selectors to monitor (comma-separated)', '')
   .option('-v, --verbose', 'Verbose logging')
@@ -46,6 +47,7 @@ program
         mode: options.mode,
         maxPages: parseInt(options.pages),
         maxProducts: parseInt(options.products),
+        location: options.location || '400001', // Default Mumbai pincode
         realtime: options.mode === 'realtime',
         duration: parseInt(options.duration),
         selectors: options.selectors ? options.selectors.split(',').map(s => s.trim()) : []

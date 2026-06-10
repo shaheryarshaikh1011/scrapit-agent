@@ -184,6 +184,181 @@ class EcommerceScraper extends BaseScraper {
   }
 
   /**
+   * Handle site-specific popups like location modals
+   */
+  async handleSitePopups(url, location) {
+    const domain = extractDomain(url);
+    
+    // Handle JioMart location modal
+    if (domain.includes('jiomart')) {
+      await this.handleJioMartLocation(location);
+    }
+    
+    // Handle Amazon location (if needed)
+    if (domain.includes('amazon')) {
+      await this.handleAmazonLocation(location);
+    }
+  }
+
+  /**
+   * Handle JioMart location modal - set default to Mumbai if not specified
+   */
+  async handleJioMartLocation(location) {
+    const defaultPincode = location || '400001'; // Mumbai default
+    
+    try {
+      // Wait a bit for modal to appear
+      await this.page.waitForTimeout(2000);
+      
+      // Check if location modal is visible
+      const modalSelectors = [
+        'text=Enable Location Services',
+        'text=Select Location Manually',
+        '[class*="location-modal"]',
+        '[class*="pincode-modal"]'
+      ];
+      
+      let modalFound = false;
+      for (const selector of modalSelectors) {
+        try {
+          const element = this.page.locator(selector).first();
+          if (await element.isVisible({ timeout: 2000 })) {
+            modalFound = true;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      
+      if (!modalFound) {
+        logger.info('No location modal found, continuing...');
+        return;
+      }
+      
+      logger.info(`JioMart location modal detected, setting pincode: ${defaultPincode}`);
+      
+      // Try clicking "Select Location Manually" button
+      const manualLocationBtn = this.page.locator('text=Select Location Manually').first();
+      if (await manualLocationBtn.isVisible({ timeout: 2000 })) {
+        await manualLocationBtn.click();
+        await this.page.waitForTimeout(1000);
+      }
+      
+      // Look for pincode input field
+      const pincodeSelectors = [
+        'input[placeholder*="pincode"]',
+        'input[placeholder*="Pincode"]',
+        'input[placeholder*="PIN"]',
+        'input[type="text"][maxlength="6"]',
+        'input[name*="pincode"]',
+        '[class*="pincode"] input',
+        'input[aria-label*="pincode"]'
+      ];
+      
+      for (const selector of pincodeSelectors) {
+        try {
+          const input = this.page.locator(selector).first();
+          if (await input.isVisible({ timeout: 2000 })) {
+            await input.clear();
+            await input.fill(defaultPincode);
+            logger.info(`Entered pincode: ${defaultPincode}`);
+            
+            // Wait for suggestions or auto-complete
+            await this.page.waitForTimeout(1500);
+            
+            // Try to click confirm/submit button
+            const confirmSelectors = [
+              'button:has-text("Confirm")',
+              'button:has-text("Apply")',
+              'button:has-text("Submit")',
+              'button:has-text("Save")',
+              '[class*="confirm"] button',
+              '[class*="apply"] button'
+            ];
+            
+            for (const btnSelector of confirmSelectors) {
+              try {
+                const btn = this.page.locator(btnSelector).first();
+                if (await btn.isVisible({ timeout: 1000 })) {
+                  await btn.click();
+                  logger.success('Location confirmed');
+                  await this.page.waitForTimeout(2000);
+                  return;
+                }
+              } catch {
+                continue;
+              }
+            }
+            
+            // If no confirm button, try pressing Enter
+            await input.press('Enter');
+            await this.page.waitForTimeout(2000);
+            return;
+          }
+        } catch {
+          continue;
+        }
+      }
+      
+      // If we couldn't find pincode input, try closing the modal
+      const closeSelectors = [
+        'button[aria-label="close"]',
+        'button[class*="close"]',
+        '[class*="modal"] button:has-text("×")',
+        '[class*="modal"] [class*="close"]',
+        'svg[class*="close"]'
+      ];
+      
+      for (const selector of closeSelectors) {
+        try {
+          const closeBtn = this.page.locator(selector).first();
+          if (await closeBtn.isVisible({ timeout: 1000 })) {
+            await closeBtn.click();
+            logger.info('Closed location modal');
+            await this.page.waitForTimeout(1000);
+            return;
+          }
+        } catch {
+          continue;
+        }
+      }
+      
+    } catch (error) {
+      logger.warn(`Could not handle JioMart location modal: ${error.message}`);
+    }
+  }
+
+  /**
+   * Handle Amazon location popup
+   */
+  async handleAmazonLocation(location) {
+    const defaultPincode = location || '400001'; // Mumbai default
+    
+    try {
+      // Check for location popup
+      const deliverTo = this.page.locator('#nav-global-location-popover-link, #glow-ingress-block');
+      if (await deliverTo.isVisible({ timeout: 2000 })) {
+        await deliverTo.click();
+        await this.page.waitForTimeout(1000);
+        
+        const pincodeInput = this.page.locator('input[data-action="GLUXPostalInputAction"]');
+        if (await pincodeInput.isVisible({ timeout: 2000 })) {
+          await pincodeInput.fill(defaultPincode);
+          
+          const applyBtn = this.page.locator('span[data-action="GLUXPostalUpdateAction"] input, button:has-text("Apply")');
+          if (await applyBtn.isVisible({ timeout: 1000 })) {
+            await applyBtn.click();
+            await this.page.waitForTimeout(2000);
+          }
+        }
+      }
+    } catch {
+      // Ignore - location might already be set
+    }
+  }
+
+  /**
    * Handle dynamic content loading
    */
   async handleDynamicContent() {
