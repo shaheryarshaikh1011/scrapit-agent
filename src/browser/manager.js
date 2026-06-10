@@ -57,6 +57,11 @@ class BrowserManager {
     
     // Create context with fingerprint
     const contextOptions = this.fingerprint.getContextOptions();
+    
+    // Set default geolocation to Mumbai for sites that need location
+    contextOptions.geolocation = { latitude: 19.0760, longitude: 72.8777 }; // Mumbai
+    contextOptions.permissions = ['geolocation'];
+    
     this.context = await this.browser.newContext(contextOptions);
     
     // Apply stealth to context

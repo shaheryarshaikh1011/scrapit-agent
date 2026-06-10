@@ -201,19 +201,117 @@ class EcommerceScraper extends BaseScraper {
   }
 
   /**
-   * Handle JioMart location modal - try to dismiss/close location popups
+   * Handle JioMart location modal - click "Use current location" or dismiss
    */
   async handleJioMartLocation(location) {
     try {
       // Wait a bit for modals to appear
       await this.page.waitForTimeout(2000);
       
-      // Try to dismiss any location-related popups by closing them
-      // This is simpler and more reliable than trying to fill in location
-      await this.dismissJioMartPopups();
+      // First try to handle the "Enable Location Services" modal
+      await this.handleJioMartEnableLocationModal();
+      
+      // Then try to handle the "Choose your delivery address" modal
+      await this.handleJioMartChooseAddressModal();
       
     } catch (error) {
       logger.warn(`Could not handle JioMart location modal: ${error.message}`);
+    }
+  }
+
+  /**
+   * Handle JioMart's "Enable Location Services" modal
+   */
+  async handleJioMartEnableLocationModal() {
+    try {
+      const enableLocationText = this.page.locator('text=Enable Location Services').first();
+      if (await enableLocationText.isVisible({ timeout: 3000 })) {
+        logger.info('Found "Enable Location Services" modal');
+        
+        // Try clicking "Enable Location" button (the teal button)
+        const enableBtnSelectors = [
+          'button:has-text("Enable Location")',
+          'text=Enable Location >> nth=0',
+          '[class*="enable"] button',
+          'button[class*="primary"]',
+          'button[class*="btn"]:has-text("Enable")',
+          'div:has-text("Enable Location") >> button',
+          'a:has-text("Enable Location")',
+          // Try by color/style - teal button
+          'button[style*="background"]',
+          '.jm-btn-primary',
+          '[class*="location-btn"]'
+        ];
+        
+        for (const selector of enableBtnSelectors) {
+          try {
+            const enableBtn = this.page.locator(selector).first();
+            if (await enableBtn.isVisible({ timeout: 1500 })) {
+              logger.info(`Found enable button with selector: ${selector}`);
+              await enableBtn.click({ force: true });
+              logger.success('Clicked "Enable Location" button');
+              await this.page.waitForTimeout(3000);
+              return true;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+        
+        // Fallback: click "Select Location Manually"
+        const manualBtn = this.page.locator('text=Select Location Manually').first();
+        if (await manualBtn.isVisible({ timeout: 1000 })) {
+          await manualBtn.click({ force: true });
+          logger.info('Clicked "Select Location Manually"');
+          await this.page.waitForTimeout(1500);
+          return true;
+        }
+      }
+    } catch (e) {
+      logger.warn(`Enable location modal error: ${e.message}`);
+    }
+    return false;
+  }
+
+  /**
+   * Handle JioMart's "Choose your delivery address" modal
+   */
+  async handleJioMartChooseAddressModal() {
+    try {
+      const chooseAddressText = this.page.locator('text=Choose your delivery address').first();
+      if (await chooseAddressText.isVisible({ timeout: 2000 })) {
+        logger.info('Found "Choose your delivery address" modal');
+        
+        // Try clicking "Use current location" option
+        const useCurrentLocationSelectors = [
+          'text=Use current location',
+          'text=use current location',
+          '[class*="current-location"]',
+          '[class*="currentLocation"]',
+          'div:has-text("Use current location")',
+          'button:has-text("Use current location")'
+        ];
+        
+        for (const selector of useCurrentLocationSelectors) {
+          try {
+            const locationBtn = this.page.locator(selector).first();
+            if (await locationBtn.isVisible({ timeout: 1500 })) {
+              await locationBtn.click();
+              logger.success('Clicked "Use current location"');
+              await this.page.waitForTimeout(3000);
+              return;
+            }
+          } catch {
+            continue;
+          }
+        }
+        
+        // If "Use current location" not found, try to dismiss the modal
+        logger.info('"Use current location" not found, attempting to dismiss modal');
+        await this.dismissJioMartPopups();
+      }
+    } catch {
+      // Modal not present
     }
   }
 
@@ -222,7 +320,7 @@ class EcommerceScraper extends BaseScraper {
    */
   async dismissJioMartPopups() {
     // Try multiple times as there can be multiple popups
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       let dismissed = false;
       
       // Common close button selectors
@@ -236,28 +334,20 @@ class EcommerceScraper extends BaseScraper {
         '[class*="modal-close"]',
         'button:has(svg[class*="close"])',
         '[class*="cross"]',
-        // Back buttons (the < button in the screenshot)
-        'button:has-text("<")',
-        '[class*="back-btn"]',
-        '[class*="back-arrow"]',
+        // Back buttons
         '[aria-label*="back"]',
         '[aria-label*="Back"]',
-        // Generic X or × character buttons
+        '[class*="back-btn"]',
+        '[class*="back-arrow"]',
+        // Generic X buttons
         'button:has-text("×")',
-        'button:has-text("✕")',
-        'button:has-text("X")',
-        // SVG close icons
-        'svg[class*="close"]',
-        'svg[class*="cross"]',
-        // Modal overlay click to dismiss
-        '[class*="modal-backdrop"]',
-        '[class*="overlay"]'
+        'button:has-text("✕")'
       ];
       
       for (const selector of closeSelectors) {
         try {
           const closeBtn = this.page.locator(selector).first();
-          if (await closeBtn.isVisible({ timeout: 1000 })) {
+          if (await closeBtn.isVisible({ timeout: 800 })) {
             await closeBtn.click();
             logger.info(`Dismissed popup using: ${selector}`);
             dismissed = true;
@@ -269,30 +359,18 @@ class EcommerceScraper extends BaseScraper {
         }
       }
       
-      // Also try pressing Escape key to close modals
+      // Try Escape key if no button found
       if (!dismissed) {
         try {
           await this.page.keyboard.press('Escape');
           await this.page.waitForTimeout(500);
-          
-          // Check if any modal is still visible
-          const modalVisible = await this.page.locator('[class*="modal"], [class*="popup"], [class*="dialog"]').first().isVisible({ timeout: 500 }).catch(() => false);
-          if (!modalVisible) {
-            logger.info('Dismissed popup using Escape key');
-            dismissed = true;
-          }
         } catch {
           // Ignore
         }
-      }
-      
-      // If nothing was dismissed, we're probably done
-      if (!dismissed) {
         break;
       }
     }
     
-    // Final wait for page to settle
     await this.page.waitForTimeout(1000);
   }
 
