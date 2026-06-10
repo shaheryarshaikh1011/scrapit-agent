@@ -537,7 +537,7 @@ class EcommerceScraper extends BaseScraper {
   async scrapeJioMartProductPage() {
     // Wait for product content to fully load
     await this.page.waitForTimeout(3000);
-    
+
     const productData = await this.page.evaluate(() => {
       const data = {
         type: 'product',
@@ -556,157 +556,244 @@ class EcommerceScraper extends BaseScraper {
         availability: null,
         inStock: true,
         weight: null,
+        sku: null,
+        articleId: null,
+        variants: [],
+        selectedVariant: null,
         specifications: {}
       };
-      
-      // Get title from multiple possible locations
-      const titleSelectors = [
-        '[class*="product-description"] h1',
-        '[class*="productDescription"] h1',
-        '[class*="pdp"] h1',
-        'h1[class*="title"]',
-        'h1[class*="name"]',
-        '[class*="product-name"]',
-        '[class*="productName"]'
-      ];
-      
-      for (const sel of titleSelectors) {
-        const el = document.querySelector(sel);
-        if (el && el.textContent.trim()) {
-          data.title = el.textContent.trim();
-          break;
-        }
-      }
-      
-      // Fallback: extract from breadcrumb or page text
-      if (!data.title) {
-        const descContainer = document.querySelector('[class*="productDescriptionContainer"]');
-        if (descContainer) {
-          // Look for text that matches brand + product pattern
-          const text = descContainer.textContent;
-          // Extract product name - usually appears after brand name
-          const match = text.match(/^(.+?)([\d.]+\s*\(?\d*\s*(?:Ratings?|Reviews?)?\)?)/);
-          if (match) {
-            data.title = match[1].trim();
+
+      // Try to extract from window.APP_DATA first (most reliable)
+      try {
+        if (window.APP_DATA && window.APP_DATA.reduxData && window.APP_DATA.reduxData.catalog) {
+          const catalog = window.APP_DATA.reduxData.catalog;
+          const productDetails = catalog.product_details;
+
+          if (productDetails) {
+            // Get title
+            data.title = productDetails.name || productDetails.title;
+
+            // Get brand
+            data.brand = productDetails.brand?.name || productDetails.brand;
+
+            // Get price info - handle different price structures
+            if (productDetails.price) {
+              const effectivePrice = productDetails.price.effective;
+              const markedPrice = productDetails.price.marked;
+              
+              // Handle nested min/max structure
+              if (effectivePrice && typeof effectivePrice === 'object') {
+                data.price = effectivePrice.min || effectivePrice.max || null;
+              } else {
+                data.price = effectivePrice;
+              }
+              
+              if (markedPrice && typeof markedPrice === 'object') {
+                data.originalPrice = markedPrice.min || markedPrice.max || null;
+              } else {
+                data.originalPrice = markedPrice;
+              }
+              
+              // If price is 0 or null, it might be in a different structure
+              if (!data.price || data.price === 0) {
+                data.price = productDetails.price.selling || productDetails.price.current || null;
+              }
+              if (!data.originalPrice || data.originalPrice === 0) {
+                data.originalPrice = productDetails.price.mrp || productDetails.price.original || null;
+              }
+              
+              data.priceText = data.price ? `₹${data.price}` : null;
+              data.originalPriceText = data.originalPrice ? `₹${data.originalPrice}` : null;
+            }
+
+            // Get discount
+            if (productDetails.discount) {
+              data.discount = productDetails.discount;
+            } else if (data.originalPrice && data.price && data.originalPrice > data.price) {
+              data.discount = `${Math.round((1 - data.price / data.originalPrice) * 100)}% off`;
+            }
+
+            // Get images
+            if (productDetails.medias) {
+              data.images = productDetails.medias
+                .filter(m => m.type === 'image' && m.url)
+                .map(m => m.url.replace(/t\.resize\(w:\d+\)/, 't.resize(w:800)'));
+              data.image = data.images[0] || null;
+            }
+
+            // Get rating
+            if (productDetails.rating) {
+              data.rating = productDetails.rating.average?.toString() || productDetails.rating.toString();
+              data.reviewCount = productDetails.rating.count;
+            }
+
+            // Get availability
+            data.inStock = productDetails.sellable !== false;
+            data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
+
+            // Get SKU/article info
+            data.sku = productDetails.uid || productDetails.sku;
+            data.articleId = productDetails.article_id;
+
+            // Get weight - prefer from title or specific field
+            if (productDetails.item_code && productDetails.item_code.match(/\d+\s*[gkml]/i)) {
+              data.weight = productDetails.item_code;
+            } else if (productDetails.size && productDetails.size.display) {
+              data.weight = productDetails.size.display;
+            } else if (data.title) {
+              const weightFromTitle = data.title.match(/(\d+\s*(?:g|kg|ml|l|pack|pcs?))/i);
+              if (weightFromTitle) {
+                data.weight = weightFromTitle[1];
+              }
+            }
+            
+            // Store article ID separately
+            data.articleId = productDetails.article_id || productDetails.uid;
+
+            // Get variants/sizes
+            if (productDetails.sizes && Array.isArray(productDetails.sizes)) {
+              data.variants = productDetails.sizes.map(size => ({
+                size: size.display || size.value,
+                price: size.price?.effective?.min || size.price?.effective,
+                priceText: size.price ? `₹${size.price.effective?.min || size.price.effective}` : null,
+                originalPrice: size.price?.marked?.min || size.price?.marked,
+                selected: size.is_selected || false,
+                inStock: size.sellable !== false,
+                quantity: size.quantity
+              }));
+
+              // Get selected variant
+              const selected = data.variants.find(v => v.selected);
+              if (selected) {
+                data.selectedVariant = selected;
+                // Update price from selected variant if main price is missing
+                if ((!data.price || data.price === 0) && selected.price) {
+                  data.price = selected.price;
+                  data.priceText = `₹${selected.price}`;
+                }
+                if ((!data.originalPrice || data.originalPrice === 0) && selected.originalPrice) {
+                  data.originalPrice = selected.originalPrice;
+                  data.originalPriceText = `₹${selected.originalPrice}`;
+                }
+                data.inStock = selected.inStock;
+                data.availability = selected.inStock ? 'In Stock' : 'Currently Unavailable';
+                data.weight = selected.size || data.weight;
+              }
+            }
+
+            // Get description
+            if (productDetails.description) {
+              data.description = productDetails.description;
+            } else if (productDetails.short_description) {
+              data.description = productDetails.short_description;
+            }
+
+            // Get specifications from grouped_attributes
+            if (productDetails.grouped_attributes) {
+              productDetails.grouped_attributes.forEach(group => {
+                if (group.details) {
+                  group.details.forEach(attr => {
+                    if (attr.key && attr.value) {
+                      data.specifications[attr.key] = attr.value;
+                    }
+                  });
+                }
+              });
+            }
           }
         }
+      } catch (e) {
+        console.log('APP_DATA extraction error:', e.message);
       }
-      
-      // Get title from image alt
+
+      // Fallback to DOM extraction if APP_DATA didn't work
       if (!data.title) {
-        const mainImg = document.querySelector('img[alt][class*="product"], img[src*="catalog"]');
+        // Get title from image alt
+        const mainImg = document.querySelector('img[alt][src*="catalog"]');
         if (mainImg && mainImg.alt) {
           data.title = mainImg.alt;
         }
       }
-      
+
       // Clean up title - remove duplicate brand name at start
       if (data.title) {
-        // Pattern: "Brand Brand Product" -> "Brand Product"
         const words = data.title.split(' ');
         if (words.length >= 2 && words[0] === words[1]) {
           data.title = words.slice(1).join(' ');
         }
       }
-      
-      // Get price - look for price elements
-      const priceSelectors = [
-        '[class*="sellingPrice"]',
-        '[class*="selling-price"]',
-        '[class*="finalPrice"]',
-        '[class*="final-price"]',
-        '[class*="offer-price"]',
-        '[class*="pdp-price"]'
-      ];
-      
-      for (const sel of priceSelectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-          const text = el.textContent.trim();
-          const priceMatch = text.match(/₹[\d,]+/);
-          if (priceMatch) {
-            data.priceText = priceMatch[0];
-            data.price = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
-            break;
+
+      // DOM fallback for price - only if needed and use targeted extraction
+      if (!data.price || data.price === 0) {
+        // Look for price specifically in product description area
+        const priceContainer = document.querySelector('[class*="productDescription"], [class*="pdp"]');
+        const priceArea = priceContainer || document.body;
+        const priceText = priceArea.textContent;
+        
+        // Find prices with ₹ symbol followed by proper number (not % or small numbers from discounts)
+        // Pattern: ₹ followed by number >= 10 (to avoid "₹8% OFF" type matches)
+        const priceMatches = priceText.match(/₹\s*(\d{2,6})/g);
+        if (priceMatches && priceMatches.length > 0) {
+          const prices = priceMatches
+            .map(p => parseInt(p.replace(/[₹,\s]/g, '')))
+            .filter(p => p >= 10 && p < 100000); // Filter out too small or large values
+          
+          if (prices.length > 0) {
+            // Sort to find selling price (usually smallest) and MRP (usually larger)
+            const sortedPrices = [...new Set(prices)].sort((a, b) => a - b);
+            data.price = sortedPrices[0];
+            data.priceText = `₹${data.price}`;
+            
+            if (sortedPrices.length > 1 && sortedPrices[1] > data.price) {
+              data.originalPrice = sortedPrices[1];
+              data.originalPriceText = `₹${data.originalPrice}`;
+            }
           }
         }
-      }
-      
-      // If no specific price element, look for ₹ in text
-      if (!data.price) {
-        const allText = document.body.textContent;
-        const priceMatches = allText.match(/₹[\d,]+/g);
-        if (priceMatches && priceMatches.length > 0) {
-          // First price is usually current price
-          data.priceText = priceMatches[0];
-          data.price = parseInt(priceMatches[0].replace(/[₹,]/g, ''));
-          
-          // Look for MRP/original price
-          if (priceMatches.length > 1) {
-            const prices = priceMatches.map(p => parseInt(p.replace(/[₹,]/g, '')));
-            const maxPrice = Math.max(...prices);
-            if (maxPrice > data.price) {
-              data.originalPrice = maxPrice;
-              data.originalPriceText = `₹${maxPrice.toLocaleString('en-IN')}`;
+        
+        // If still no price, try single digit prices but more carefully
+        if (!data.price || data.price === 0) {
+          // Look specifically for "₹XX" pattern without % after
+          const carefulPriceMatches = priceText.match(/₹(\d+)(?![%])/g);
+          if (carefulPriceMatches) {
+            const prices = carefulPriceMatches
+              .map(p => parseInt(p.replace(/[₹,]/g, '')))
+              .filter(p => p > 0 && p < 100000);
+            
+            if (prices.length > 0) {
+              const sortedPrices = [...new Set(prices)].sort((a, b) => a - b);
+              data.price = sortedPrices[0];
+              data.priceText = `₹${data.price}`;
+              
+              if (sortedPrices.length > 1) {
+                data.originalPrice = sortedPrices[1];
+                data.originalPriceText = `₹${data.originalPrice}`;
+              }
             }
           }
         }
       }
       
-      // Get MRP/original price
-      const mrpSelectors = [
-        '[class*="mrp"]',
-        '[class*="original"]',
-        '[class*="striked"]',
-        'del',
-        's'
-      ];
-      
-      for (const sel of mrpSelectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-          const text = el.textContent.trim();
-          const priceMatch = text.match(/₹[\d,]+/);
-          if (priceMatch) {
-            data.originalPriceText = priceMatch[0];
-            data.originalPrice = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
-            break;
-          }
-        }
-      }
-      
-      // Calculate discount
-      if (data.originalPrice && data.price && data.originalPrice > data.price) {
+      // Calculate discount if we have both prices
+      if (data.originalPrice && data.price && data.originalPrice > data.price && !data.discount) {
         data.discount = `${Math.round((1 - data.price / data.originalPrice) * 100)}% off`;
       }
-      
-      // Get images
-      const imgSet = new Set();
-      document.querySelectorAll('img[src*="catalog"], img[src*="product"]').forEach(img => {
-        let src = img.src || img.dataset?.src;
-        if (src && !src.includes('data:image')) {
-          // Get higher resolution version
-          src = src.replace(/t\.resize\(w:\d+\)/, 't.resize(w:800)');
-          imgSet.add(src);
-        }
-      });
-      data.images = [...imgSet];
-      data.image = data.images[0] || null;
-      
-      // Get rating
-      const ratingEl = document.querySelector('[class*="rating"]');
-      if (ratingEl) {
-        const ratingMatch = ratingEl.textContent.match(/([\d.]+)\s*(?:\(|$)/);
-        if (ratingMatch) {
-          data.rating = ratingMatch[1];
-        }
-        const reviewMatch = ratingEl.textContent.match(/\((\d+)\)/);
-        if (reviewMatch) {
-          data.reviewCount = parseInt(reviewMatch[1]);
-        }
+
+      // DOM fallback for images
+      if (data.images.length === 0) {
+        const imgSet = new Set();
+        document.querySelectorAll('img[src*="catalog"]').forEach(img => {
+          let src = img.src || img.dataset?.src;
+          if (src && !src.includes('data:image')) {
+            src = src.replace(/t\.resize\(w:\d+\)/, 't.resize(w:800)');
+            imgSet.add(src);
+          }
+        });
+        data.images = [...imgSet];
+        data.image = data.images[0] || null;
       }
-      
-      // Extract rating from text pattern like "3.7(7624)"
+
+      // DOM fallback for rating
       if (!data.rating) {
         const bodyText = document.body.textContent;
         const ratingPattern = /([\d.]+)\s*\((\d+)\s*(?:Ratings?|Reviews?)?\)/i;
@@ -716,132 +803,30 @@ class EcommerceScraper extends BaseScraper {
           data.reviewCount = parseInt(match[2]);
         }
       }
-      
-      // Extract all SKU variants (size options)
-      data.variants = [];
-      const sizeSelectors = [
-        '[class*="size"] button',
-        '[class*="Size"] button',
-        '[class*="variant"] button',
-        '[class*="sku"] button',
-        'button[class*="size"]'
-      ];
-      
-      for (const sel of sizeSelectors) {
-        document.querySelectorAll(sel).forEach(btn => {
-          const btnText = btn.textContent.trim();
-          const isSelected = btn.classList.contains('selected') || 
-                            btn.getAttribute('aria-selected') === 'true' ||
-                            btn.closest('[class*="selected"]') !== null ||
-                            btn.className.toLowerCase().includes('selected') ||
-                            btn.className.toLowerCase().includes('active');
-          
-          // Check if this specific variant is out of stock
-          const parent = btn.closest('div');
-          const btnTextLower = btnText.toLowerCase();
-          const hasOutOfStock = btnTextLower.includes('out of stock') || 
-                                btnTextLower.includes('out') ||
-                                (parent && parent.textContent.toLowerCase().includes('out of stock'));
-          
-          // Extract size and price from button
-          const sizeMatch = btnText.match(/(\d+\s*(?:g|kg|ml|l|pack|pc|pcs))/i);
-          const priceMatch = btnText.match(/₹([\d,]+)/);
-          
-          if (sizeMatch || priceMatch) {
-            data.variants.push({
-              size: sizeMatch ? sizeMatch[1] : null,
-              price: priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : null,
-              priceText: priceMatch ? `₹${priceMatch[1]}` : null,
-              selected: isSelected,
-              inStock: !hasOutOfStock
-            });
+
+      // DOM fallback for availability
+      if (data.availability === null) {
+        let hasAddToCartButton = false;
+        document.querySelectorAll('button').forEach(btn => {
+          if (btn.textContent.toLowerCase().includes('add to cart')) {
+            hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
           }
         });
+        data.inStock = hasAddToCartButton;
+        data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
       }
-      
-      // Get availability - check for "Add to Cart" button as primary indicator
-      let hasAddToCartButton = false;
-      document.querySelectorAll('button').forEach(btn => {
-        if (btn.textContent.toLowerCase().includes('add to cart')) {
-          hasAddToCartButton = !btn.disabled && window.getComputedStyle(btn).display !== 'none';
-        }
-      });
-      
-      // Check if main product area (not variant options) shows "out of stock"
-      const mainProductArea = document.querySelector('[class*="productDescription"], [class*="product-info"]');
-      const variantArea = document.querySelector('[class*="size"], [class*="variant"]');
-      
-      // Get text from main area excluding variant selector area
-      let mainAreaText = mainProductArea ? mainProductArea.textContent.toLowerCase() : document.body.textContent.toLowerCase();
-      if (variantArea) {
-        mainAreaText = mainAreaText.replace(variantArea.textContent.toLowerCase(), '');
-      }
-      
-      // Product is in stock if Add to Cart button is present
-      data.inStock = hasAddToCartButton;
-      data.availability = data.inStock ? 'In Stock' : 'Currently Unavailable';
-      
-      // Update selected variant info
-      const selectedVariant = data.variants.find(v => v.selected);
-      if (selectedVariant) {
-        data.selectedVariant = selectedVariant;
-        // Selected variant stock status overrides
-        if (!selectedVariant.inStock) {
-          data.inStock = false;
-          data.availability = 'Currently Unavailable';
+
+      // DOM fallback for brand
+      if (!data.brand) {
+        const brandMatch = document.body.textContent.match(/Brand\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:Sold|Country|Article|$)/i);
+        if (brandMatch && brandMatch[1]) {
+          data.brand = brandMatch[1].trim();
         }
       }
-      
-      // Get brand
-      const brandPatterns = [
-        /Brand\s*[:\-]?\s*([A-Za-z0-9\s]+?)(?:Sold|Country|Article|$)/i,
-        /^([A-Z][a-z]+)\s+[A-Z]/
-      ];
-      for (const pattern of brandPatterns) {
-        const match = document.body.textContent.match(pattern);
-        if (match && match[1]) {
-          data.brand = match[1].trim();
-          break;
-        }
-      }
-      
-      // Get weight/quantity
-      const weightMatch = document.body.textContent.match(/(\d+\s*(?:g|kg|ml|l|G|KG|ML|L))\b/i);
-      if (weightMatch) {
-        data.weight = weightMatch[1];
-      }
-      
-      // Get description from accordion or detail sections
-      const descSelectors = [
-        '[class*="productInfo"]',
-        '[class*="product-info"]',
-        '[class*="description"]',
-        '[class*="detail"]'
-      ];
-      
-      for (const sel of descSelectors) {
-        const el = document.querySelector(sel);
-        if (el && el.textContent.trim().length > 20) {
-          data.description = el.textContent.trim().substring(0, 1000);
-          break;
-        }
-      }
-      
-      // Get specifications
-      document.querySelectorAll('[class*="specification"] tr, [class*="spec"] tr').forEach(row => {
-        const cells = row.querySelectorAll('td, th');
-        if (cells.length >= 2) {
-          const key = cells[0].textContent.trim();
-          const value = cells[1].textContent.trim();
-          if (key && value) {
-            data.specifications[key] = value;
-          }
-        }
-      });
-      
+
       return data;
     });
-    
+
     return productData;
   }
 

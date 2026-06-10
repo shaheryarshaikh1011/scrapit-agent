@@ -27,70 +27,45 @@ const fs = require('fs');
   // Wait for content
   await page.waitForTimeout(5000);
   
-  // Save HTML
-  const html = await page.content();
-  fs.writeFileSync('output/jiomart-product-source.html', html);
-  console.log('Saved HTML');
-  
-  // Analyze product page structure
+  // Analyze size/variant structure
   const analysis = await page.evaluate(() => {
     const results = {
-      h1Elements: [],
-      priceElements: [],
-      imageElements: [],
-      ratingElements: [],
-      descriptionElements: []
+      sizeButtons: [],
+      allButtons: [],
+      sizeDivs: []
     };
     
-    // Find h1 and potential title elements
-    document.querySelectorAll('h1, [class*="title"], [class*="name"], [class*="product-name"]').forEach((el, i) => {
-      if (i < 10) {
-        results.h1Elements.push({
-          tag: el.tagName,
-          text: el.textContent.trim().substring(0, 100),
-          className: el.className?.substring?.(0, 100) || ''
-        });
+    // Find all elements with "Size" text nearby
+    document.querySelectorAll('*').forEach(el => {
+      if (el.textContent.includes('Size') && el.children.length < 5) {
+        const parent = el.parentElement;
+        if (parent) {
+          results.sizeDivs.push({
+            text: el.textContent.trim().substring(0, 100),
+            className: el.className?.substring?.(0, 80) || '',
+            parentClass: parent.className?.substring?.(0, 80) || '',
+            parentHTML: parent.innerHTML?.substring?.(0, 300)
+          });
+        }
       }
     });
     
-    // Find price elements
-    document.querySelectorAll('[class*="price"], [class*="amount"], [class*="mrp"]').forEach((el, i) => {
-      if (i < 15) {
-        results.priceElements.push({
-          text: el.textContent.trim().substring(0, 50),
-          className: el.className?.substring?.(0, 100) || '',
-          tag: el.tagName
+    // Find buttons containing price or size info
+    document.querySelectorAll('button, [role="button"]').forEach((btn, i) => {
+      const text = btn.textContent.trim();
+      if (text.includes('₹') || text.match(/\d+\s*[gkml]/i)) {
+        results.sizeButtons.push({
+          text: text.substring(0, 100),
+          className: btn.className?.substring?.(0, 100) || '',
+          tagName: btn.tagName,
+          parentClass: btn.parentElement?.className?.substring?.(0, 80) || ''
         });
       }
-    });
-    
-    // Find images
-    document.querySelectorAll('img[src*="product"], img[src*="catalog"], img[class*="product"], [class*="gallery"] img, [class*="pdp"] img').forEach((el, i) => {
-      if (i < 10) {
-        results.imageElements.push({
-          src: el.src?.substring(0, 150),
-          alt: el.alt,
-          className: el.className?.substring?.(0, 50) || ''
-        });
-      }
-    });
-    
-    // Find rating elements
-    document.querySelectorAll('[class*="rating"], [class*="star"], [class*="review"]').forEach((el, i) => {
-      if (i < 10) {
-        results.ratingElements.push({
-          text: el.textContent.trim().substring(0, 50),
-          className: el.className?.substring?.(0, 100) || ''
-        });
-      }
-    });
-    
-    // Find description
-    document.querySelectorAll('[class*="desc"], [class*="detail"], [class*="specification"]').forEach((el, i) => {
-      if (i < 10) {
-        results.descriptionElements.push({
-          text: el.textContent.trim().substring(0, 200),
-          className: el.className?.substring?.(0, 100) || ''
+      // Also capture all buttons for reference
+      if (i < 20) {
+        results.allButtons.push({
+          text: text.substring(0, 50),
+          className: btn.className?.substring?.(0, 50) || ''
         });
       }
     });
@@ -98,20 +73,14 @@ const fs = require('fs');
     return results;
   });
   
-  console.log('\n=== H1 / Title Elements ===');
-  console.log(JSON.stringify(analysis.h1Elements, null, 2));
+  console.log('\n=== Size Buttons ===');
+  console.log(JSON.stringify(analysis.sizeButtons, null, 2));
   
-  console.log('\n=== Price Elements ===');
-  console.log(JSON.stringify(analysis.priceElements, null, 2));
+  console.log('\n=== Size Divs ===');
+  console.log(JSON.stringify(analysis.sizeDivs.slice(0, 5), null, 2));
   
-  console.log('\n=== Image Elements ===');
-  console.log(JSON.stringify(analysis.imageElements, null, 2));
-  
-  console.log('\n=== Rating Elements ===');
-  console.log(JSON.stringify(analysis.ratingElements, null, 2));
-  
-  console.log('\n=== Description Elements ===');
-  console.log(JSON.stringify(analysis.descriptionElements.slice(0, 5), null, 2));
+  console.log('\n=== All Buttons (first 20) ===');
+  console.log(JSON.stringify(analysis.allButtons, null, 2));
   
   await browser.close();
 })();
