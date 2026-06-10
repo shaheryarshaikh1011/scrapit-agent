@@ -233,7 +233,7 @@ function printResults(result) {
   if (result.type === 'homepage' || result.pageType === 'homepage') {
     console.log(chalk.bold('Homepage Data:'));
     console.log(`  Categories: ${chalk.cyan(result.totalCategories || result.categories?.length || 0)}`);
-    console.log(`  Featured Products: ${chalk.cyan(result.totalFeaturedProducts || result.featuredProducts?.length || 0)}`);
+    console.log(`  Products: ${chalk.cyan(result.totalProducts || result.products?.length || 0)}`);
     console.log(`  Banners: ${chalk.cyan(result.banners?.length || 0)}`);
     
     if (result.categories?.length > 0) {
@@ -243,12 +243,15 @@ function printResults(result) {
       });
     }
     
-    if (result.featuredProducts?.length > 0) {
-      console.log(chalk.bold('\nFeatured Products:'));
-      result.featuredProducts.slice(0, 5).forEach((p, i) => {
+    if (result.products?.length > 0) {
+      console.log(chalk.bold('\nProducts Found:'));
+      result.products.slice(0, 10).forEach((p, i) => {
         console.log(`  ${i + 1}. ${chalk.white(p.title?.substring(0, 50) || 'N/A')}`);
-        if (p.priceText) console.log(`     ${chalk.green(p.priceText)}`);
+        if (p.priceText) console.log(`     ${chalk.green(p.priceText)}${p.originalPriceText ? ` (was ${chalk.gray(p.originalPriceText)})` : ''}`);
       });
+      if (result.products.length > 10) {
+        console.log(chalk.gray(`\n  ... and ${result.products.length - 10} more products`));
+      }
     }
   }
 

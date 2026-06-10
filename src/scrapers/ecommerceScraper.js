@@ -424,35 +424,35 @@ class EcommerceScraper extends BaseScraper {
    * Handle dynamic content loading
    */
   async handleDynamicContent() {
-    // Scroll to trigger lazy loading - do more scrolls for JioMart
+    const startUrl = this.page.url();
+    
+    // Wait for JavaScript to render content (JioMart is React-based)
+    await this.page.waitForTimeout(5000);
+    
+    // Scroll extensively to trigger lazy loading
     if (this.siteConfig.lazyLoad) {
-      await this.browser.scrollToBottom(10);
-    }
-
-    // Wait longer for images and products to load
-    await this.page.waitForTimeout(3000);
-
-    // Click "Load More" buttons if present
-    try {
-      const loadMoreSelectors = [
-        'button:has-text("Load More")',
-        'button:has-text("View More")',
-        'button:has-text("Show More")',
-        '[class*="load-more"]',
-        '[class*="view-more"]',
-        '[class*="show-more"]'
-      ];
-
-      for (const selector of loadMoreSelectors) {
-        const button = this.page.locator(selector).first();
-        if (await button.isVisible({ timeout: 1000 })) {
-          await button.click();
+      for (let i = 0; i < 10; i++) {
+        // Check if we navigated away
+        if (this.page.url() !== startUrl) {
+          logger.warn('Page navigated during scroll, going back');
+          await this.page.goBack();
           await this.page.waitForTimeout(2000);
+          break;
         }
+        
+        await this.page.evaluate(() => {
+          window.scrollBy(0, window.innerHeight * 0.8);
+        });
+        await this.page.waitForTimeout(1000);
       }
-    } catch {
-      // No load more button
+      
+      // Scroll back to top
+      await this.page.evaluate(() => window.scrollTo(0, 0));
+      await this.page.waitForTimeout(1000);
     }
+
+    // Wait for content to fully load
+    await this.page.waitForTimeout(3000);
   }
 
   /**
@@ -556,6 +556,8 @@ class EcommerceScraper extends BaseScraper {
     // Extract featured/promoted products using browser evaluation for better link extraction
     let featuredProducts = [];
     try {
+      // Wait for page to be stable before extracting
+      await this.page.waitForTimeout(2000);
       featuredProducts = await this.extractProductsFromPage();
     } catch (e) {
       logger.warn(`Browser extraction failed, falling back to HTML parsing: ${e.message}`);
@@ -599,12 +601,12 @@ class EcommerceScraper extends BaseScraper {
     return {
       type: 'homepage',
       categories: uniqueCategories,
-      featuredProducts: featuredProducts.slice(0, 30),
+      products: featuredProducts.slice(0, 100), // Get up to 100 products
       banners: banners.slice(0, 15),
       sections: uniqueSections,
       navigation: uniqueLinks,
       totalCategories: uniqueCategories.length,
-      totalFeaturedProducts: featuredProducts.length,
+      totalProducts: featuredProducts.length,
       totalLinks: uniqueLinks.length
     };
   }
@@ -617,151 +619,106 @@ class EcommerceScraper extends BaseScraper {
     
     const products = await this.page.evaluate((baseUrl) => {
       const items = [];
+      const seenTitles = new Set();
       
-      // Find all product card-like elements
+      // JioMart specific selectors based on their actual DOM structure
       const cardSelectors = [
+        '[class*="productCard__cardWrapper"]',
+        '[class*="cardWrapper"]',
         '[class*="product-card"]',
-        '[class*="plp-card"]',
-        '[class*="item-card"]',
-        '[data-product]',
-        '[class*="card"]'
+        '[class*="plp-card"]'
       ];
       
-      let cards = [];
+      let allCards = [];
       for (const selector of cardSelectors) {
-        const found = document.querySelectorAll(selector);
-        if (found.length > 0) {
-          cards = Array.from(found);
-          break;
+        try {
+          const found = document.querySelectorAll(selector);
+          if (found.length > 0) {
+            allCards.push(...Array.from(found));
+          }
+        } catch {
+          // Skip invalid selectors
         }
       }
       
-      cards.forEach(card => {
-        // Get title
-        const titleEl = card.querySelector('h3, h4, h5, [class*="name"], [class*="title"]');
-        const title = titleEl ? titleEl.textContent.trim() : null;
+      // Remove duplicates
+      const uniqueCards = [...new Set(allCards)];
+      console.log(`Found ${uniqueCards.length} product cards`);
+      
+      uniqueCards.forEach(card => {
+        // Get title from various possible locations
+        const titleEl = card.querySelector('[class*="productName"], [class*="product-name"], [class*="title"], h3, h4');
+        let title = titleEl ? titleEl.textContent.trim() : null;
         
-        if (!title || title.length < 3) return;
+        // Fallback: get title from card text (clean up)
+        if (!title) {
+          const cardText = card.textContent;
+          // Extract title before price symbols
+          const titleMatch = cardText.match(/^(?:Add)?(?:\d+\s*Pack)?(.+?)(?:₹|$)/);
+          if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1].trim();
+          }
+        }
+        
+        if (!title || title.length < 3 || title.length > 300) return;
+        if (seenTitles.has(title)) return;
+        seenTitles.add(title);
         
         // Get image
         const imgEl = card.querySelector('img');
-        const image = imgEl ? (imgEl.src || imgEl.dataset.src) : null;
+        const image = imgEl ? (imgEl.src || imgEl.dataset?.src) : null;
         
-        // Get link - multiple approaches
+        // Get link - JioMart wraps cards in anchors or has product URLs
         let link = null;
-        
-        // 1. Check for anchor tags with valid href
-        const anchors = card.querySelectorAll('a[href]');
-        for (const a of anchors) {
-          if (a.href && !a.href.includes('javascript:') && a.href !== '#' && a.href.length > baseUrl.length) {
-            link = a.href;
-            break;
-          }
+        const anchorEl = card.querySelector('a[href*="/product/"]') || card.closest('a[href*="/product/"]');
+        if (anchorEl) {
+          link = anchorEl.href;
         }
-        
-        // 2. Check if card itself or parent is an anchor
         if (!link) {
-          const parentAnchor = card.closest('a[href]');
-          if (parentAnchor && parentAnchor.href && !parentAnchor.href.includes('javascript:')) {
-            link = parentAnchor.href;
+          // Try any anchor
+          const anyAnchor = card.querySelector('a[href]') || card.closest('a');
+          if (anyAnchor && anyAnchor.href && !anyAnchor.href.includes('javascript:')) {
+            link = anyAnchor.href;
           }
         }
         
-        // 3. Check for data attributes that might contain product ID or URL
-        if (!link) {
-          const productId = card.dataset.productId || card.dataset.id || card.dataset.sku || 
-                           card.getAttribute('data-product-id') || card.getAttribute('data-item-id');
-          if (productId) {
-            // Try to construct URL from product ID
-            link = `/product/${productId}`;
-          }
-        }
-        
-        // 4. Check for onclick handlers that might reveal product URL
-        if (!link) {
-          const clickableEl = card.querySelector('[onclick]') || (card.hasAttribute('onclick') ? card : null);
-          if (clickableEl) {
-            const onclick = clickableEl.getAttribute('onclick');
-            const urlMatch = onclick?.match(/['"](\/[^'"]+)['"]/);
-            if (urlMatch) {
-              link = urlMatch[1];
-            }
-          }
-        }
-        
-        // 5. Try to find hidden links or product URLs in any data attributes
-        if (!link) {
-          const allElements = card.querySelectorAll('*');
-          for (const el of allElements) {
-            for (const attr of el.attributes) {
-              if (attr.value.includes('/product/') || attr.value.includes('/p/') || attr.value.includes('/dp/')) {
-                link = attr.value;
-                break;
-              }
-            }
-            if (link) break;
-          }
-        }
-        
-        // Get all price-related text
-        const priceEls = card.querySelectorAll('[class*="price"], [class*="amount"]');
+        // Get prices from PriceContainer
+        const priceContainer = card.querySelector('[class*="PriceContainer"], [class*="priceContainer"], [class*="price"]');
         let currentPrice = null;
         let originalPrice = null;
         let currentPriceText = null;
         let originalPriceText = null;
         
-        priceEls.forEach(priceEl => {
-          const text = priceEl.textContent.trim();
-          const priceMatch = text.match(/₹[\d,]+/);
-          if (priceMatch) {
-            const price = parseInt(priceMatch[0].replace(/[₹,]/g, ''));
-            const classList = priceEl.className.toLowerCase();
-            
-            if (classList.includes('mrp') || classList.includes('original') || classList.includes('strike')) {
-              if (!originalPrice || price > originalPrice) {
-                originalPrice = price;
-                originalPriceText = priceMatch[0];
-              }
-            } else {
-              if (!currentPrice || price < currentPrice) {
-                currentPrice = price;
-                currentPriceText = priceMatch[0];
-              }
-            }
-          }
-        });
-        
-        // If we only found one price, check if there's combined text
-        if (currentPrice && !originalPrice) {
-          const allText = card.textContent;
-          const allPrices = allText.match(/₹[\d,]+/g);
+        if (priceContainer) {
+          const priceText = priceContainer.textContent;
+          const allPrices = priceText.match(/₹[\d,]+/g);
+          
           if (allPrices && allPrices.length >= 2) {
+            // First is usually current, second is MRP
             const prices = allPrices.map(p => parseInt(p.replace(/[₹,]/g, '')));
             currentPrice = Math.min(...prices);
             originalPrice = Math.max(...prices);
             currentPriceText = `₹${currentPrice.toLocaleString('en-IN')}`;
             originalPriceText = `₹${originalPrice.toLocaleString('en-IN')}`;
+          } else if (allPrices && allPrices.length === 1) {
+            currentPrice = parseInt(allPrices[0].replace(/[₹,]/g, ''));
+            currentPriceText = allPrices[0];
           }
         }
         
-        // Get rating
-        const ratingEl = card.querySelector('[class*="rating"], [class*="star"], [data-rating]');
-        let rating = null;
-        if (ratingEl) {
-          rating = ratingEl.dataset.rating || ratingEl.getAttribute('aria-label') || ratingEl.textContent.trim();
-          if (rating && rating.length > 50) rating = null;
-        }
-        
-        // Get discount
-        const discountEl = card.querySelector('[class*="discount"], [class*="off"], [class*="save"]');
-        let discount = discountEl ? discountEl.textContent.trim() : null;
-        if (!discount && originalPrice && currentPrice && originalPrice > currentPrice) {
+        // Calculate discount
+        let discount = null;
+        if (originalPrice && currentPrice && originalPrice > currentPrice) {
           discount = `${Math.round((1 - currentPrice / originalPrice) * 100)}% off`;
         }
         
-        // Get unit/quantity
-        const unitEl = card.querySelector('[class*="unit"], [class*="qty"], [class*="weight"], [class*="size"], [class*="pack"]');
+        // Get unit/pack info
+        const unitEl = card.querySelector('[class*="pack"], [class*="unit"], [class*="qty"]');
         const unit = unitEl ? unitEl.textContent.trim() : null;
+        
+        // Get rating if available
+        const ratingEl = card.querySelector('[class*="rating"], [class*="star"]');
+        const rating = ratingEl ? ratingEl.textContent.trim() : null;
         
         items.push({
           title,
